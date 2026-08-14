@@ -1,0 +1,22 @@
+{
+  "name": "communication-practice-platform",
+  "version": "1.0.0",
+  "description": "A responsive full-stack MERN platform for communication practice, video feedback, and speaking skill growth.",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js",
+    "client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "nodemon server/server.js",
+    "dev:client": "npm run dev --prefix client",
+    "seed": "node server/utils/seedData.js",
+    "install-all": "npm install && npm install --prefix server && npm install --prefix client",
+    "build": "npm install --prefix client && npm run build --prefix client",
+    "render-build": "npm install && npm install --prefix server && npm install --prefix client && npm run build --prefix client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "nodemon": "^3.1.9"
+  }
+}

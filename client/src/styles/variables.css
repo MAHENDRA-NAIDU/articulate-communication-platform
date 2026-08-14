@@ -1,0 +1,71 @@
+:root {
+  /* Color Palette - Warm Cream & Terracotta/Coral Minimal Aesthetic */
+  --bg-app: #FAF7F2;
+  --bg-surface: #FFFFFF;
+  --bg-surface-elevated: #FDFCF9;
+  --bg-surface-muted: #F3ECE1;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FFFDF9;
+  --bg-input: #FFFFFF;
+  
+  /* Text & Inks */
+  --text-primary: #191716;
+  --text-secondary: #5C554E;
+  --text-muted: #8E857C;
+  --text-light: #B5ACA2;
+  --text-inverse: #FFFFFF;
+
+  /* Terracotta Coral Accent */
+  --accent: #E05D38;
+  --accent-hover: #C94C29;
+  --accent-active: #B43F1F;
+  --accent-surface: #FDF3E7;
+  --accent-tint: #FCEDE8;
+  --accent-border: #F6C8BC;
+  
+  /* Neutral Borders */
+  --border-subtle: #EDE7DD;
+  --border-default: #E2DACD;
+  --border-medium: #D0C5B5;
+  --border-focus: #191716;
+
+  /* Status Colors */
+  --success: #2E7D32;
+  --success-bg: #E8F5E9;
+  --success-border: #C8E6C9;
+  --warning: #ED6C02;
+  --warning-bg: #FFF3E0;
+  --error: #D32F2F;
+  --error-bg: #FFEBEE;
+  --error-border: #FFCDD2;
+
+  /* Typography */
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Fraunces', Georgia, serif;
+
+  /* Elevation Shadows */
+  --shadow-xs: 0 1px 2px rgba(25, 23, 22, 0.04);
+  --shadow-sm: 0 2px 6px rgba(25, 23, 22, 0.05);
+  --shadow-card: 0 4px 16px rgba(25, 23, 22, 0.04), 0 1px 3px rgba(25, 23, 22, 0.02);
+  --shadow-card-hover: 0 10px 30px rgba(25, 23, 22, 0.08), 0 2px 6px rgba(25, 23, 22, 0.04);
+  --shadow-modal: 0 20px 50px rgba(25, 23, 22, 0.16);
+
+  /* Rounded Corners */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 9999px;
+
+  /* Layout Container Widths */
+  --max-width: 1200px;
+  --max-width-narrow: 840px;
+  --max-width-wide: 1360px;
+  --nav-height: 72px;
+
+  /* Transitions */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: 350ms cubic-bezier(0.16, 1, 0.3, 1);
+}
