@@ -100,18 +100,6 @@ Visit **`http://localhost:5173`** in your browser.
 
 ---
 
-## 🔑 Default Test Credentials
-
-| Role | Email / Username | Password | Notes |
-| :--- | :--- | :--- | :--- |
-| **Administrator** | `admin@articulate.com` | `Password123!` | Has access to `/admin` dashboard |
-| **Learner (Mahendra)** | `mahendra@example.com` | `Password123!` | Has existing practice videos |
-| **Learner (Ananya)** | `ananya@example.com` | `Password123!` | Campus placement candidate |
-
-*To register a new administrator account from the register page, expand "Have an Admin Invite key?" and enter `ARTICULATE_ADMIN_2025_SECRET`.*
-
----
-
 ## 📡 API Overview
 
 | Method | Endpoint | Description | Access |
