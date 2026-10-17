@@ -31,6 +31,7 @@ export const RegisterPage = () => {
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(60);
+  const [bounceError, setBounceError] = useState(null);
 
   // Countdown timer for OTP resend
   useEffect(() => {
@@ -80,7 +81,8 @@ export const RegisterPage = () => {
         setStep('verify');
         setResendTimer(60);
         setOtp('');
-        success(data.message || 'Verification code sent! Please check your inbox.');
+        setBounceError(null);
+        success(data.message || 'Verification code dispatched. Please check your inbox.');
       }
     } catch (err) {
       error(err.message || 'Registration failed. Please check your inputs.');
@@ -115,6 +117,9 @@ export const RegisterPage = () => {
         });
       }
     } catch (err) {
+      if (err.data?.bounced) {
+        setBounceError(err.message);
+      }
       error(err.message || 'Verification failed. Please check your code.');
     } finally {
       setVerifyLoading(false);
@@ -127,11 +132,15 @@ export const RegisterPage = () => {
     try {
       setResendLoading(true);
       const data = await authService.resendOTP(pendingEmail);
+      setBounceError(null);
       success(data.message || 'A fresh verification code has been dispatched.');
       setResendTimer(60);
       setOtp('');
     } catch (err) {
-      error(err.message || 'Unable to resend code. Please try again later.');
+      if (err.data?.bounced) {
+        setBounceError(err.message);
+      }
+      error(err.message || 'Unable to resend code. Please verify your email address.');
     } finally {
       setResendLoading(false);
     }
@@ -298,11 +307,18 @@ export const RegisterPage = () => {
                   Verify Your Email
                 </h1>
                 <p style={styles.subtitle}>
-                  We sent a 6-digit verification code to{' '}
+                  We dispatched a 6-digit verification code to{' '}
                   <strong style={{ color: '#1C1917' }}>{pendingEmail}</strong>.
-                  Enter the code below to activate your account.
+                  If this mailbox exists, check your inbox and spam folder to activate your account.
                 </p>
               </div>
+
+              {bounceError && (
+                <div style={styles.bounceAlert}>
+                  <p style={{ fontWeight: '600', color: '#B91C1C', marginBottom: '4px' }}>Delivery Notice</p>
+                  <p style={{ fontSize: '0.84rem', color: '#7F1D1D', margin: 0 }}>{bounceError}</p>
+                </div>
+              )}
 
               <form onSubmit={handleVerifySubmit}>
                 <div className="form-group" style={{ textAlign: 'center' }}>
@@ -506,5 +522,13 @@ const styles = {
   footerLink: {
     fontWeight: '700',
     color: '#E05D38',
+  },
+  bounceAlert: {
+    backgroundColor: '#FEF2F2',
+    border: '1px solid #FCA5A5',
+    borderRadius: '8px',
+    padding: '12px 14px',
+    marginBottom: '20px',
+    textAlign: 'left',
   },
 };

@@ -165,6 +165,13 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
  */
 const sendVerificationOTPEmail = async ({ to, name, otp }) => {
   if (process.env.NODE_ENV === 'test') {
+    if (to && to.includes('provider-reject')) {
+      return {
+        success: false,
+        error: 'Simulated provider rejection: recipient address rejected by email provider.',
+        code: 'validation_error',
+      };
+    }
     return { success: true, skipped: true, id: 'test_mock_id' };
   }
 

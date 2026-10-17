@@ -25,8 +25,10 @@ process.env.COOKIE_SAMESITE = 'lax';
 process.env.COOKIE_SECURE = 'false'; // HTTP on localhost test runner
 process.env.TRUST_PROXY = 'false';
 process.env.GOOGLE_CLIENT_ID = 'isolated-test-google-client-id.apps.googleusercontent.com';
+process.env.RESEND_WEBHOOK_SECRET = 'whsec_dGVzdF9zZWNyZXRfa2V5XzEyMzQ1Njc4OTA=';
 
 // Load mongoose and app
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
@@ -83,6 +85,29 @@ function makeRawRequest(method, endpoint, { headers = {}, rawBody = null } = {})
     }
     req.end();
   });
+}
+
+// Helper: Generate valid Svix signature headers for Resend webhook testing
+function signSvixWebhook(payloadObj, secret = process.env.RESEND_WEBHOOK_SECRET) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const msgId = `msg_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const rawBody = JSON.stringify(payloadObj);
+  const secretKey = secret.startsWith('whsec_')
+    ? Buffer.from(secret.slice(6), 'base64')
+    : Buffer.from(secret, 'utf8');
+  const signature = crypto
+    .createHmac('sha256', secretKey)
+    .update(`${msgId}.${timestamp}.${rawBody}`)
+    .digest('base64');
+  return {
+    headers: {
+      'svix-id': msgId,
+      'svix-timestamp': timestamp.toString(),
+      'svix-signature': `v1,${signature}`,
+      'Content-Type': 'application/json',
+    },
+    rawBody,
+  };
 }
 
 // Helper: HTTP request wrapper
@@ -801,6 +826,77 @@ async function runTests() {
     // TEST 12: PHASE 3 - EMAIL VERIFICATION (OTP) & GOOGLE SIGN-IN HARDENING
     // =========================================================================
 
+    // TEST 12-PRE-1: Email syntax validation rejects malformed addresses
+    await test('Email Validation: Malformed email syntax rejected with 400', async () => {
+      const badEmails = [
+        'plainaddress',
+        '@missinguser.com',
+        'user@.com',
+        'user@domain..com',
+        'user..name@domain.com',
+      ];
+      for (const badEmail of badEmails) {
+        const res = await makeRequest('POST', '/api/auth/register', {
+          body: {
+            name: 'Bad Email Learner',
+            username: `bad_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            email: badEmail,
+            password: 'ValidPassword123!',
+          },
+        });
+        assert(res.status === 400, `Expected 400 for bad email "${badEmail}", got ${res.status}`);
+        assert(res.data.success === false, 'Expected success: false');
+        assert(
+          typeof res.data.message === 'string' && res.data.message.length > 0,
+          `Expected error message, got: ${res.data.message}`
+        );
+      }
+    });
+
+    // TEST 12-PRE-2: Domain MX validation rejects nonexistent domains
+    await test('Email Validation: Nonexistent domain MX rejected with 400', async () => {
+      const res = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Nonexistent MX Learner',
+          username: `nomx_${Date.now()}`,
+          email: `test_${Date.now()}@nonexistent-domain-nx-98317203.com`,
+          password: 'ValidPassword123!',
+        },
+      });
+      assert(res.status === 400, `Expected 400 for nonexistent domain MX, got ${res.status}`);
+      assert(res.data.success === false, 'Expected success: false');
+      assert(
+        res.data.message.toLowerCase().includes('mail server') ||
+        res.data.message.toLowerCase().includes('domain'),
+        `Expected domain/mail server error message, got: ${res.data.message}`
+      );
+    });
+
+    // TEST 12-PRE-3: Resend provider rejection rolls back registration
+    await test('Email Validation: Resend provider rejection rolls back registration with 400', async () => {
+      const providerRejectEmail = `test-user-provider-reject-${Date.now()}@articulate-test.local`;
+      const res = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Provider Reject Learner',
+          username: `preject_${Date.now()}`,
+          email: providerRejectEmail,
+          password: 'ValidPassword123!',
+        },
+      });
+      assert(res.status === 400, `Expected 400 on provider rejection, got ${res.status}`);
+      assert(res.data.success === false, 'Expected success: false');
+      assert(
+        res.data.message.toLowerCase().includes('deliver') ||
+        res.data.message.toLowerCase().includes('dispatched') ||
+        res.data.message.toLowerCase().includes('failed'),
+        `Expected delivery failed message, got: ${res.data.message}`
+      );
+
+      // Verify rollback: user record was deleted
+      const userInDb = await User.findOne({ email: providerRejectEmail });
+      assert(userInDb === null, 'Expected unverified user record to be rolled back/deleted on provider rejection');
+    });
+
     const otpTestEmail = `otp_user_${Date.now()}@articulate-test.local`;
     const otpTestPassword = 'OtpSecurePassword2026!';
     let otpUserId = null;
@@ -980,6 +1076,198 @@ async function runTests() {
       const secondOtpHash = user2.emailVerificationOTP;
 
       assert(firstOtpHash !== secondOtpHash, 'Expected newly generated OTP hash to differ from previous OTP');
+    });
+
+    // TEST 12-WH-1: Resend Webhook: Missing signature rejected with 401
+    await test('Resend Webhook: Missing signature headers rejected with 401', async () => {
+      const res = await makeRawRequest('POST', '/api/auth/webhook/resend', {
+        headers: { 'Content-Type': 'application/json' },
+        rawBody: JSON.stringify({ type: 'email.bounced' }),
+      });
+      assert(res.status === 401, `Expected 401, got ${res.status}`);
+      assert(res.data.message.toLowerCase().includes('signature'), 'Expected signature error message');
+    });
+
+    // TEST 12-WH-2: Resend Webhook: Invalid signature rejected with 401
+    await test('Resend Webhook: Invalid/forged signature rejected with 401', async () => {
+      const res = await makeRawRequest('POST', '/api/auth/webhook/resend', {
+        headers: {
+          'Content-Type': 'application/json',
+          'svix-id': 'msg_fake_123',
+          'svix-timestamp': Math.floor(Date.now() / 1000).toString(),
+          'svix-signature': 'v1,dGhpcyBpcyBub3QgYSB2YWxpZCBzaWduYXR1cmU=',
+        },
+        rawBody: JSON.stringify({ type: 'email.bounced' }),
+      });
+      assert(res.status === 401, `Expected 401, got ${res.status}`);
+    });
+
+    // TEST 12-WH-3: Resend Webhook: Valid signed email.bounced marks unverified account as bounced
+    let bounceTestEmail = `bounce_target_${Date.now()}@articulate-test.local`;
+    let bounceUserId = null;
+    await test('Resend Webhook: Valid signed email.bounced event marks pending user as bounced', async () => {
+      const regRes = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Bounce Target Learner',
+          username: `bounce_${Date.now()}`,
+          email: bounceTestEmail,
+          password: 'Password123!',
+        },
+      });
+      assert(regRes.status === 201, `Expected 201, got ${regRes.status}`);
+      const user = await User.findOne({ email: bounceTestEmail });
+      bounceUserId = user._id;
+      createdUserIds.push(bounceUserId);
+
+      const bouncePayload = {
+        type: 'email.bounced',
+        data: {
+          to: [bounceTestEmail],
+          bounce: {
+            message: '550 5.1.1 The email account that you tried to reach does not exist.',
+          },
+        },
+      };
+
+      const signed = signSvixWebhook(bouncePayload);
+      const hookRes = await makeRawRequest('POST', '/api/auth/webhook/resend', {
+        headers: signed.headers,
+        rawBody: signed.rawBody,
+      });
+
+      assert(hookRes.status === 200, `Expected 200 for valid webhook, got ${hookRes.status}`);
+      assert(hookRes.data.success === true, 'Expected success: true');
+
+      const updatedUser = await User.findById(bounceUserId).select('+emailVerificationOTP +emailVerificationExpires');
+      assert(updatedUser.emailDeliveryStatus === 'bounced', 'Expected emailDeliveryStatus: bounced');
+      assert(updatedUser.emailBounceReason.includes('does not exist'), 'Expected bounce reason recorded');
+      assert(!updatedUser.emailVerificationOTP, 'Expected OTP cleared on bounce');
+      assert(!updatedUser.emailVerificationExpires, 'Expected OTP expiry cleared on bounce');
+    });
+
+    // TEST 12-WH-4: Resend Webhook: Bounced account cannot verify OTP
+    await test('Resend Webhook: Bounced account cannot verify OTP (returns 400)', async () => {
+      const verifyRes = await makeRequest('POST', '/api/auth/verify-email', {
+        body: {
+          email: bounceTestEmail,
+          otp: '123456',
+        },
+      });
+      assert(verifyRes.status === 400, `Expected 400 for bounced account, got ${verifyRes.status}`);
+      assert(verifyRes.data.bounced === true, 'Expected bounced flag in response');
+      assert(verifyRes.data.message.toLowerCase().includes('bounced'), 'Expected bounce warning');
+    });
+
+    // TEST 12-WH-5: Resend Webhook: Bounced account cannot login
+    await test('Resend Webhook: Bounced account cannot login (returns 403 with bounce explanation)', async () => {
+      const loginRes = await makeRequest('POST', '/api/auth/login', {
+        body: {
+          identifier: bounceTestEmail,
+          password: 'Password123!',
+        },
+      });
+      assert(loginRes.status === 403, `Expected 403 for login on bounced account, got ${loginRes.status}`);
+      assert(loginRes.data.emailBounced === true, 'Expected emailBounced flag in response');
+      assert(loginRes.data.message.toLowerCase().includes('bounced'), 'Expected bounce explanation');
+    });
+
+    // TEST 12-WH-6: Resend Webhook: Verified account is immune to delayed bounce events
+    await test('Resend Webhook: Verified account is IMMUNE to delayed bounce events', async () => {
+      const verifiedEmail = `immune_verified_${Date.now()}@articulate-test.local`;
+      const regRes = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Immune Learner',
+          username: `immune_${Date.now()}`,
+          email: verifiedEmail,
+          password: 'Password123!',
+        },
+      });
+      assert(regRes.status === 201, `Expected 201, got ${regRes.status}`);
+      const user = await User.findOne({ email: verifiedEmail });
+      createdUserIds.push(user._id);
+
+      // Verify the user
+      user.isEmailVerified = true;
+      user.emailDeliveryStatus = 'delivered';
+      user.emailVerificationOTP = undefined;
+      user.emailVerificationExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+
+      // Now send a delayed bounce event for this verified user
+      const delayedBouncePayload = {
+        type: 'email.bounced',
+        data: {
+          to: [verifiedEmail],
+          bounce: {
+            message: 'Delayed bounce simulation',
+          },
+        },
+      };
+
+      const signed = signSvixWebhook(delayedBouncePayload);
+      const hookRes = await makeRawRequest('POST', '/api/auth/webhook/resend', {
+        headers: signed.headers,
+        rawBody: signed.rawBody,
+      });
+
+      assert(hookRes.status === 200, `Expected 200, got ${hookRes.status}`);
+
+      const checkUser = await User.findById(user._id);
+      assert(checkUser.isEmailVerified === true, 'Verified user must REMAIN verified');
+      assert(checkUser.emailDeliveryStatus === 'delivered', 'Delivery status must NOT be changed to bounced');
+    });
+
+    // TEST 12-WH-7: Re-registration reclaims username from dead/bounced unverified account
+    await test('Resend Webhook: Re-registering with corrected email reclaims username from bounced unverified account', async () => {
+      const targetUsername = `reclaim_${Date.now()}`;
+      const badEmail = `bad_address_${Date.now()}@articulate-test.local`;
+      const fixedEmail = `fixed_address_${Date.now()}@articulate-test.local`;
+
+      // 1. Initial registration with bad email
+      const reg1 = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Typo User',
+          username: targetUsername,
+          email: badEmail,
+          password: 'Password123!',
+        },
+      });
+      assert(reg1.status === 201, `Expected 201, got ${reg1.status}`);
+
+      // 2. Mark bad email as bounced via webhook
+      const bouncePayload = {
+        type: 'email.bounced',
+        data: {
+          to: [badEmail],
+          bounce: { message: '550 Recipient does not exist' },
+        },
+      };
+      const signed = signSvixWebhook(bouncePayload);
+      await makeRawRequest('POST', '/api/auth/webhook/resend', {
+        headers: signed.headers,
+        rawBody: signed.rawBody,
+      });
+
+      // 3. User registers again with the SAME username but corrected email
+      const reg2 = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Typo User Corrected',
+          username: targetUsername,
+          email: fixedEmail,
+          password: 'Password123!',
+        },
+      });
+      assert(reg2.status === 201, `Expected 201 when reclaiming username, got ${reg2.status}`);
+      assert(reg2.data.pendingVerification === true, 'Expected pendingVerification: true');
+
+      const newUser = await User.findOne({ email: fixedEmail });
+      assert(newUser, 'New user with corrected email must exist');
+      assert(newUser.username === targetUsername, 'New user should successfully own the username');
+      createdUserIds.push(newUser._id);
+
+      // Verify old dead user was removed
+      const oldUser = await User.findOne({ email: badEmail });
+      assert(oldUser === null, 'Old bounced account should be purged');
     });
 
     // TEST 12J: Google Sign-In with invalid token rejected

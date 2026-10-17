@@ -11,6 +11,7 @@ const {
   changePassword,
   forgotPassword,
   resetPassword,
+  handleResendWebhook,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const {
@@ -33,6 +34,7 @@ router.post('/logout', logout);
 router.put('/change-password', protect, passwordChangeLimiter, changePassword);
 router.post('/forgot-password', forgotPasswordLimiter, forgotPassword);
 router.post('/reset-password', resetPasswordLimiter, resetPassword);
+router.post('/webhook/resend', handleResendWebhook);
 router.get('/me', protect, getMe);
 
 module.exports = router;

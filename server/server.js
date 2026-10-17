@@ -74,8 +74,15 @@ app.use(
   })
 );
 
-// Body and cookie parsing
-app.use(express.json({ limit: '50mb' }));
+// Body and cookie parsing (preserves rawBody buffer for webhook signature validation)
+app.use(
+  express.json({
+    limit: '50mb',
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 

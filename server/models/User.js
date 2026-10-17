@@ -57,6 +57,15 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    emailDeliveryStatus: {
+      type: String,
+      enum: ['pending', 'sent', 'delivered', 'bounced', 'failed'],
+      default: 'pending',
+    },
+    emailBounceReason: {
+      type: String,
+      default: '',
+    },
     emailVerificationOTP: {
       type: String,
       select: false,
