@@ -130,15 +130,20 @@ export const UploadPage = () => {
       formData.append('duration', duration.toString());
 
       const data = await videoService.createVideo(formData, (progress) => {
-        setUploadProgress(progress.percent);
         const loadedMb = (progress.loaded / (1024 * 1024)).toFixed(1);
         const totalMb = (progress.total / (1024 * 1024)).toFixed(1);
         if (progress.percent >= 100) {
-          setUploadStatusText('Processing and finalizing video...');
+          // Client transmission finished; server is saving & uploading to cloud storage
+          setUploadProgress(99);
+          setUploadStatusText('Processing and finalizing on server...');
         } else {
+          setUploadProgress(progress.percent);
           setUploadStatusText(`Uploading ${progress.percent}% (${loadedMb} MB / ${totalMb} MB)...`);
         }
       });
+
+      setUploadProgress(100);
+      setUploadStatusText('Upload complete!');
 
       if (data.success && data.video) {
         success('Your speaking practice video was published successfully!');

@@ -1,7 +1,8 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { cloudinary, isCloudinaryConfigured } = require('../config/cloudinary');
+const cloudinaryConfig = require('../config/cloudinary');
+const { cloudinary } = cloudinaryConfig;
 
 // Ensure local upload directories exist
 const uploadDir = path.join(__dirname, '..', 'uploads');
@@ -100,20 +101,64 @@ const upload = multer({
 const uploadMedia = async (file, folder = 'videos', resourceType = 'video') => {
   if (!file) return { url: '', publicId: '' };
 
-  if (isCloudinaryConfigured) {
+  if (cloudinaryConfig.isCloudinaryConfigured) {
     try {
       let result;
       if (resourceType === 'video') {
-        // Use upload_large for videos to support large files without hitting 100MB buffer constraints
-        result = await cloudinary.uploader.upload_large(file.path, {
-          folder: `comm_practice/${folder}`,
-          resource_type: 'video',
-          chunk_size: 20 * 1024 * 1024, // 20MB chunks
+        // Use upload_large for chunked streaming of video files; wrap in Promise to await completion and catch stream errors
+        result = await new Promise((resolve, reject) => {
+          let settled = false;
+          const safeReject = (err) => {
+            if (!settled) {
+              settled = true;
+              reject(err);
+            }
+          };
+          const safeResolve = (res) => {
+            if (!settled) {
+              settled = true;
+              resolve(res);
+            }
+          };
+
+          const uploadStream = cloudinary.uploader.upload_large(
+            file.path,
+            {
+              folder: `comm_practice/${folder}`,
+              resource_type: 'video',
+              chunk_size: 20 * 1024 * 1024, // 20MB chunks
+            },
+            (err, res) => {
+              if (err) return safeReject(err);
+              if (!res || (!res.secure_url && !res.url)) {
+                return safeReject(new Error('Cloudinary response did not return a valid media URL.'));
+              }
+              safeResolve(res);
+            }
+          );
+
+          if (uploadStream && typeof uploadStream.on === 'function') {
+            uploadStream.on('error', (streamErr) => {
+              safeReject(streamErr);
+            });
+          }
         });
       } else {
-        result = await cloudinary.uploader.upload(file.path, {
-          folder: `comm_practice/${folder}`,
-          resource_type: resourceType,
+        result = await new Promise((resolve, reject) => {
+          cloudinary.uploader.upload(
+            file.path,
+            {
+              folder: `comm_practice/${folder}`,
+              resource_type: resourceType,
+            },
+            (err, res) => {
+              if (err) return reject(err);
+              if (!res || (!res.secure_url && !res.url)) {
+                return reject(new Error('Cloudinary response did not return a valid media URL.'));
+              }
+              resolve(res);
+            }
+          );
         });
       }
 
@@ -123,7 +168,7 @@ const uploadMedia = async (file, folder = 'videos', resourceType = 'video') => {
       }
 
       return {
-        url: result.secure_url,
+        url: result.secure_url || result.url,
         publicId: result.public_id,
       };
     } catch (err) {
@@ -153,7 +198,7 @@ const uploadMedia = async (file, folder = 'videos', resourceType = 'video') => {
 const deleteMedia = async (publicId, resourceType = 'video') => {
   if (!publicId) return;
 
-  if (isCloudinaryConfigured && publicId.includes('/')) {
+  if (cloudinaryConfig.isCloudinaryConfigured && publicId.includes('/')) {
     try {
       await cloudinary.uploader.destroy(publicId, {
         resource_type: resourceType,

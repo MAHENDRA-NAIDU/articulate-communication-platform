@@ -32,9 +32,13 @@ const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const app = require('./server');
 const User = require('./models/User');
+const { Video } = require('./models/Video');
+const { uploadMedia } = require('./middleware/uploadMiddleware');
+const { cloudinary } = require('./config/cloudinary');
 
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
 const createdUserIds = [];
+const createdVideoIds = [];
 
 // Helper: Raw HTTP request wrapper for multipart/form-data
 function makeRawRequest(method, endpoint, { headers = {}, rawBody = null } = {}) {
@@ -563,6 +567,92 @@ async function runTests() {
       assert(res.status === 400, `Expected 400 for mismatched MIME type, got ${res.status}`);
     });
 
+    await test('Upload Flow: Successfully accepts multipart/form-data video upload and saves practice drill', async () => {
+      const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+      const dummyVideoBytes = Buffer.from('00000018667479706d7034320000000069736f6d6d703432', 'hex');
+      const payload = Buffer.concat([
+        Buffer.from([
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="title"',
+          '',
+          'Automated Practice Speech Drill',
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="category"',
+          '',
+          'Technology',
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="description"',
+          '',
+          'Testing video upload flow integration.',
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="duration"',
+          '',
+          '45',
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="video"; filename="test_speech.mp4"',
+          'Content-Type: video/mp4',
+          '',
+          '',
+        ].join('\r\n')),
+        dummyVideoBytes,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ]);
+
+      const res = await makeRawRequest('POST', '/api/videos', {
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          Authorization: `Bearer ${newTokenAfterChange}`,
+        },
+        rawBody: payload,
+      });
+
+      assert(res.status === 201, `Expected 201 on valid video upload, got ${res.status} (${JSON.stringify(res.data)})`);
+      assert(res.data && res.data.success === true, 'Expected res.data.success === true');
+      assert(res.data.video && res.data.video._id, 'Expected returned video with _id');
+      assert(res.data.video.videoUrl, 'Expected returned video to have videoUrl');
+      assert(res.data.video.title === 'Automated Practice Speech Drill', 'Expected title to match');
+      createdVideoIds.push(res.data.video._id);
+    });
+
+    await test('Upload Flow: uploadMedia properly awaits Cloudinary upload_large Promise and returns secure_url', async () => {
+      const cloudinaryConfig = require('./config/cloudinary');
+      const originalConfigured = cloudinaryConfig.isCloudinaryConfigured;
+      const originalUploadLarge = cloudinary.uploader.upload_large;
+      try {
+        cloudinaryConfig.isCloudinaryConfigured = true;
+
+        cloudinary.uploader.upload_large = (filePath, options, callback) => {
+          setTimeout(() => {
+            callback(null, {
+              secure_url: 'https://res.cloudinary.com/test-cloud/video/upload/v12345/comm_practice/videos/drill.mp4',
+              public_id: 'comm_practice/videos/drill',
+            });
+          }, 20);
+        };
+
+        const fs = require('fs');
+        const tempMockPath = path.join(__dirname, 'temp_mock_video_for_test.mp4');
+        fs.writeFileSync(tempMockPath, 'mock video binary data');
+
+        const mockFile = {
+          path: tempMockPath,
+          originalname: 'drill.mp4',
+          mimetype: 'video/mp4',
+          filename: 'drill-12345.mp4',
+        };
+
+        const uploadRes = await uploadMedia(mockFile, 'videos', 'video');
+        assert(
+          uploadRes.url === 'https://res.cloudinary.com/test-cloud/video/upload/v12345/comm_practice/videos/drill.mp4',
+          `Expected Cloudinary secure_url, got ${uploadRes.url}`
+        );
+        assert(uploadRes.publicId === 'comm_practice/videos/drill', 'Expected publicId to match');
+      } finally {
+        cloudinaryConfig.isCloudinaryConfigured = originalConfigured;
+        cloudinary.uploader.upload_large = originalUploadLarge;
+      }
+    });
+
     await test('Static Uploads: Static media route enforces nosniff header', async () => {
       const res = await makeRequest('GET', '/uploads/nonexistent-file.mp4');
       assert(res.headers['x-content-type-options'] === 'nosniff', 'Missing X-Content-Type-Options: nosniff on /uploads');
@@ -1064,6 +1154,10 @@ async function runTests() {
     if (createdUserIds.length > 0) {
       const deleteResult = await User.deleteMany({ _id: { $in: createdUserIds } });
       console.log(`   Cleaned up ${deleteResult.deletedCount} test user records.`);
+    }
+    if (createdVideoIds.length > 0) {
+      const deleteResult = await Video.deleteMany({ _id: { $in: createdVideoIds } });
+      console.log(`   Cleaned up ${deleteResult.deletedCount} test video records.`);
     }
 
     // Double check that seeded users were never touched
