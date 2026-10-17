@@ -14,65 +14,85 @@ const imageUploadDir = path.join(uploadDir, 'images');
   }
 });
 
+// Allowed formats
+const ALLOWED_VIDEO_EXTS = ['.mp4', '.webm', '.mov', '.ogg', '.mkv', '.m4v', '.avi'];
+const ALLOWED_IMAGE_EXTS = ['.jpeg', '.jpg', '.png', '.webp', '.gif'];
+
 // Configure Multer Disk Storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    if (file.mimetype.startsWith('video/')) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const isVideo = ALLOWED_VIDEO_EXTS.includes(ext);
+    const isImage = ALLOWED_IMAGE_EXTS.includes(ext);
+
+    if (isVideo) {
       cb(null, videoUploadDir);
-    } else if (file.mimetype.startsWith('image/')) {
+    } else if (isImage) {
       cb(null, imageUploadDir);
     } else {
-      cb(null, uploadDir);
+      cb(new Error('Invalid destination for file format.'), null);
     }
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname).toLowerCase();
+    const ext = path.extname(file.originalname || '').toLowerCase();
     cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
   },
 });
 
-// File filter
+// File filter enforcing strict extension whitelist and MIME consistency
 const fileFilter = (req, file, cb) => {
-  const allowedVideoMimes = [
-    'video/mp4',
-    'video/webm',
-    'video/quicktime',
-    'video/ogg',
-    'video/x-matroska',
-  ];
-  const allowedImageMimes = [
-    'image/jpeg',
-    'image/png',
-    'image/webp',
-    'image/gif',
-  ];
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  const isVideoExt = ALLOWED_VIDEO_EXTS.includes(ext);
+  const isImageExt = ALLOWED_IMAGE_EXTS.includes(ext);
 
-  if (
-    allowedVideoMimes.includes(file.mimetype) ||
-    allowedImageMimes.includes(file.mimetype)
-  ) {
-    cb(null, true);
-  } else {
-    cb(
+  if (!isVideoExt && !isImageExt) {
+    return cb(
       new Error(
-        'Invalid file type. Allowed formats: MP4, WebM, MOV, JPG, PNG, WEBP.'
+        'Invalid file type. Allowed formats: MP4, WebM, MOV, MKV, JPG, PNG, WEBP.'
       ),
       false
     );
   }
+
+  // Prevent MIME mismatch / polyglot executable uploads
+  if (isVideoExt) {
+    const isAllowedVideoMime =
+      file.mimetype.startsWith('video/') ||
+      file.mimetype === 'application/octet-stream' ||
+      file.mimetype === 'application/x-matroska';
+    if (!isAllowedVideoMime) {
+      return cb(new Error('MIME type does not match video file extension.'), false);
+    }
+  }
+
+  if (isImageExt) {
+    const isAllowedImageMime =
+      file.mimetype.startsWith('image/') ||
+      file.mimetype === 'application/octet-stream';
+    if (!isAllowedImageMime) {
+      return cb(new Error('MIME type does not match image file extension.'), false);
+    }
+  }
+
+  cb(null, true);
 };
+
+// Upload limit (default 2048MB = 2GB to comfortably support large HD / 4K videos)
+const MAX_VIDEO_SIZE_MB = parseInt(process.env.MAX_VIDEO_SIZE_MB, 10) || 2048;
+const MAX_FILE_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024;
 
 const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB max limit
+    fileSize: MAX_FILE_SIZE_BYTES,
   },
 });
 
 /**
  * Uploads a local file to Cloudinary if configured, or keeps local file and returns local URL.
+ * Automatically utilizes chunked large uploads for videos exceeding standard upload sizes.
  * @param {Object} file - Multer file object
  * @param {String} folder - Subfolder category ('videos' | 'thumbnails' | 'avatars')
  * @param {String} resourceType - 'video' | 'image' | 'auto'
@@ -82,10 +102,20 @@ const uploadMedia = async (file, folder = 'videos', resourceType = 'video') => {
 
   if (isCloudinaryConfigured) {
     try {
-      const result = await cloudinary.uploader.upload(file.path, {
-        folder: `comm_practice/${folder}`,
-        resource_type: resourceType,
-      });
+      let result;
+      if (resourceType === 'video') {
+        // Use upload_large for videos to support large files without hitting 100MB buffer constraints
+        result = await cloudinary.uploader.upload_large(file.path, {
+          folder: `comm_practice/${folder}`,
+          resource_type: 'video',
+          chunk_size: 20 * 1024 * 1024, // 20MB chunks
+        });
+      } else {
+        result = await cloudinary.uploader.upload(file.path, {
+          folder: `comm_practice/${folder}`,
+          resource_type: resourceType,
+        });
+      }
 
       // Cleanup local temp file after successful cloud upload
       if (fs.existsSync(file.path)) {
@@ -97,14 +127,20 @@ const uploadMedia = async (file, folder = 'videos', resourceType = 'video') => {
         publicId: result.public_id,
       };
     } catch (err) {
-      console.error('[Cloudinary Upload Error] Falling back to local file:', err.message);
-      // Fall through to local file fallback
+      console.error('[Cloudinary Upload Error]:', err.message);
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error(`Media storage upload failed: ${err.message}`);
+      }
+      // In development: fall through to local file fallback
     }
   }
 
   // Local storage URL format
-  const subFolder = file.mimetype.startsWith('video/') ? 'videos' : 'images';
+  const ext = path.extname(file.originalname).toLowerCase();
+  const isVideo = ALLOWED_VIDEO_EXTS.includes(ext) || file.mimetype.startsWith('video/');
+  const subFolder = isVideo ? 'videos' : 'images';
   const relativeUrl = `/uploads/${subFolder}/${file.filename}`;
+
   return {
     url: relativeUrl,
     publicId: file.filename,
@@ -144,4 +180,5 @@ module.exports = {
   upload,
   uploadMedia,
   deleteMedia,
+  MAX_VIDEO_SIZE_MB,
 };

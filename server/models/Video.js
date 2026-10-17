@@ -62,7 +62,7 @@ const videoSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
-    // Extensible AI Communication Analysis Sub-Schema (Ready for future AI engines)
+    // Optional speech metadata
     aiAnalysis: {
       status: {
         type: String,
@@ -84,7 +84,7 @@ const videoSchema = new mongoose.Schema(
         },
       ],
       clarityScore: {
-        type: Number, // 0 - 100
+        type: Number,
         default: 0,
       },
       feedbackNotes: [

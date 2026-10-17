@@ -43,13 +43,15 @@ export const UploadPage = () => {
   const [duration, setDuration] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatusText, setUploadStatusText] = useState('');
 
   const handleVideoSelect = (file) => {
     if (!file) return;
 
-    // Validate size (100MB max)
-    if (file.size > 100 * 1024 * 1024) {
-      error('Video file is too large. Maximum allowed size is 100MB.');
+    // Validate size (2GB max to support long high-bitrate / 4K videos)
+    const MAX_ALLOWED_BYTES = 2048 * 1024 * 1024;
+    if (file.size > MAX_ALLOWED_BYTES) {
+      error('Video file is too large. Maximum allowed size is 2GB.');
       return;
     }
 
@@ -114,7 +116,8 @@ export const UploadPage = () => {
 
     try {
       setUploading(true);
-      setUploadProgress(20);
+      setUploadProgress(0);
+      setUploadStatusText('Preparing video upload...');
 
       const formData = new FormData();
       formData.append('video', videoFile);
@@ -126,14 +129,16 @@ export const UploadPage = () => {
       formData.append('description', description.trim());
       formData.append('duration', duration.toString());
 
-      // Progress animation
-      const progressTimer = setInterval(() => {
-        setUploadProgress((prev) => (prev < 90 ? prev + 15 : prev));
-      }, 400);
-
-      const data = await videoService.createVideo(formData);
-      clearInterval(progressTimer);
-      setUploadProgress(100);
+      const data = await videoService.createVideo(formData, (progress) => {
+        setUploadProgress(progress.percent);
+        const loadedMb = (progress.loaded / (1024 * 1024)).toFixed(1);
+        const totalMb = (progress.total / (1024 * 1024)).toFixed(1);
+        if (progress.percent >= 100) {
+          setUploadStatusText('Processing and finalizing video...');
+        } else {
+          setUploadStatusText(`Uploading ${progress.percent}% (${loadedMb} MB / ${totalMb} MB)...`);
+        }
+      });
 
       if (data.success && data.video) {
         success('Your speaking practice video was published successfully!');
@@ -190,7 +195,7 @@ export const UploadPage = () => {
                   </div>
                   <h4 style={styles.dropTitle}>Click to upload or drag & drop</h4>
                   <p style={styles.dropHint}>
-                    MP4, WebM, or MOV format (up to 100MB)
+                    MP4, WebM, MOV, or MKV format (up to 2GB)
                   </p>
                   <Button variant="secondary" size="sm" style={{ marginTop: '12px' }}>
                     Choose Video File
@@ -198,7 +203,7 @@ export const UploadPage = () => {
                   <input
                     ref={videoInputRef}
                     type="file"
-                    accept="video/mp4,video/webm,video/quicktime,video/ogg"
+                    accept="video/mp4,video/webm,video/quicktime,video/ogg,video/x-matroska,video/*"
                     onChange={(e) => handleVideoSelect(e.target.files?.[0])}
                     style={{ display: 'none' }}
                   />
@@ -358,7 +363,7 @@ export const UploadPage = () => {
               {uploading && (
                 <div style={styles.progressContainer}>
                   <div style={styles.progressTextRow}>
-                    <span style={styles.progressLabel}>Publishing Practice Video...</span>
+                    <span style={styles.progressLabel}>{uploadStatusText || 'Publishing Practice Video...'}</span>
                     <span style={styles.progressVal}>{uploadProgress}%</span>
                   </div>
                   <div style={styles.progressBarBg}>

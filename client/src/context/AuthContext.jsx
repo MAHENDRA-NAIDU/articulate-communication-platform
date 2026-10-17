@@ -42,6 +42,14 @@ export const AuthProvider = ({ children }) => {
     return data;
   };
 
+  const googleSignIn = async (idToken) => {
+    const data = await authService.googleSignIn(idToken);
+    if (data.success && data.user) {
+      setUser(data.user);
+    }
+    return data;
+  };
+
   const logout = async () => {
     try {
       await authService.logout();
@@ -61,6 +69,7 @@ export const AuthProvider = ({ children }) => {
     isAdmin: user?.role === 'admin',
     login,
     register,
+    googleSignIn,
     logout,
     updateUser,
   };

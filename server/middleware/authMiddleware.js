@@ -20,11 +20,15 @@ const protect = async (req, res, next) => {
     });
   }
 
+  if (!process.env.JWT_SECRET) {
+    return res.status(500).json({
+      success: false,
+      message: 'Server authentication configuration error: JWT_SECRET is missing.',
+    });
+  }
+
   try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || 'super_secret_jwt_key_for_communication_practice_2025_safe_token'
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const currentUser = await User.findById(decoded.id);
 
@@ -39,6 +43,36 @@ const protect = async (req, res, next) => {
       return res.status(403).json({
         success: false,
         message: 'Your account has been deactivated. Please contact support.',
+      });
+    }
+
+    // Session Invalidation Check:
+    // If token has a tokenVersion, it must match current user's tokenVersion.
+    // If token is a legacy token (tokenVersion is undefined):
+    //   - If user has never changed password (tokenVersion === 0), preserve existing session compatibility.
+    //   - If user has changed password (tokenVersion > 0), reject legacy session.
+    const tokenVer = decoded.tokenVersion;
+    const currentVer = typeof currentUser.tokenVersion === 'number' ? currentUser.tokenVersion : 0;
+
+    if (typeof tokenVer === 'number') {
+      if (tokenVer !== currentVer) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session has been invalidated due to a password change. Please log in again.',
+        });
+      }
+    } else if (currentVer > 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Session has expired due to account security update. Please log in again.',
+      });
+    }
+
+    // Verify if password was changed after token was issued
+    if (currentUser.changedPasswordAfter && currentUser.changedPasswordAfter(decoded.iat)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Session has expired due to a recent password change. Please log in again.',
       });
     }
 
@@ -72,18 +106,21 @@ const optionalAuth = async (req, res, next) => {
     token = req.headers.authorization.split(' ')[1];
   }
 
-  if (!token) {
+  if (!token || !process.env.JWT_SECRET) {
     return next();
   }
 
   try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || 'super_secret_jwt_key_for_communication_practice_2025_safe_token'
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
     if (user && user.isActive) {
-      req.user = user;
+      const tokenVer = decoded.tokenVersion;
+      const currentVer = typeof user.tokenVersion === 'number' ? user.tokenVersion : 0;
+      const isVersionValid = typeof tokenVer !== 'number' || tokenVer === currentVer;
+      const isTimeValid = !user.changedPasswordAfter || !user.changedPasswordAfter(decoded.iat);
+      if (isVersionValid && isTimeValid) {
+        req.user = user;
+      }
     }
   } catch (err) {
     // Ignore invalid optional tokens

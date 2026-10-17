@@ -11,6 +11,7 @@
     "dev:server": "nodemon server/server.js",
     "dev:client": "npm run dev --prefix client",
     "seed": "node server/utils/seedData.js",
+    "test:security": "node server/testSecurityHardening.js",
     "install-all": "npm install && npm install --prefix server && npm install --prefix client",
     "build": "npm install --prefix client && npm run build --prefix client",
     "render-build": "npm install && npm install --prefix server && npm install --prefix client && npm run build --prefix client"

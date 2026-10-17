@@ -225,16 +225,7 @@ export const VideoDetailPage = () => {
               </div>
             )}
 
-            {/* AI Preparation Info Note */}
-            <div style={styles.aiNoticeBox}>
-              <Sparkles size={16} color="#E05D38" />
-              <div>
-                <span style={styles.aiNoticeTitle}>AI Analysis Ready Architecture</span>
-                <p style={styles.aiNoticeText}>
-                  This speaking session is stored with speech-metrics metadata hooks (pace WPM, pause detection, filler-word tracking) ready for automated AI communication reports.
-                </p>
-              </div>
-            </div>
+
 
             {/* Comments / Feedback Section */}
             <CommentSection videoId={video._id} videoOwnerId={author._id || author.id} />
@@ -250,6 +241,7 @@ export const VideoDetailPage = () => {
                     <img
                       src={author.profileImage}
                       alt={author.name}
+                      referrerPolicy="no-referrer"
                       style={styles.authorAvatarLg}
                     />
                   ) : (

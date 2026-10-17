@@ -52,6 +52,7 @@ export const CommentItem = ({
               <img
                 src={author.profileImage}
                 alt={author.name}
+                referrerPolicy="no-referrer"
                 style={styles.avatar}
               />
             ) : (

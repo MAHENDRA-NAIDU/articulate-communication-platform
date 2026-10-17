@@ -80,7 +80,12 @@ export const CommentForm = ({ onSubmit, loading = false }) => {
       <div style={styles.inputContainer}>
         <div style={styles.avatarWrapper}>
           {user?.profileImage ? (
-            <img src={user.profileImage} alt={user.name} style={styles.avatar} />
+            <img
+              src={user.profileImage}
+              alt={user.name}
+              referrerPolicy="no-referrer"
+              style={styles.avatar}
+            />
           ) : (
             <div style={styles.avatarFallback}>
               {user?.name?.charAt(0).toUpperCase() || 'U'}

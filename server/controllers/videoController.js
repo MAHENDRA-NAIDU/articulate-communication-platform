@@ -1,6 +1,7 @@
 const { Video, CATEGORIES } = require('../models/Video');
 const Comment = require('../models/Comment');
 const { uploadMedia, deleteMedia } = require('../middleware/uploadMiddleware');
+const { escapeRegex } = require('../utils/sanitizeUtils');
 
 /**
  * @desc    Get all videos with search, category filtering, sorting, and pagination
@@ -30,12 +31,15 @@ const getVideos = async (req, res, next) => {
       query.userId = userId;
     }
 
-    // Search query in title or description
+    // Search query in title or description (sanitized to prevent ReDoS and regex crashes)
     if (search && search.trim() !== '') {
-      query.$or = [
-        { title: { $regex: search.trim(), $options: 'i' } },
-        { description: { $regex: search.trim(), $options: 'i' } },
-      ];
+      const sanitizedSearch = escapeRegex(search);
+      if (sanitizedSearch) {
+        query.$or = [
+          { title: { $regex: sanitizedSearch, $options: 'i' } },
+          { description: { $regex: sanitizedSearch, $options: 'i' } },
+        ];
+      }
     }
 
     // Sorting

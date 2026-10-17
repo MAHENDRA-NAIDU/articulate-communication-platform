@@ -2,6 +2,7 @@ const User = require('../models/User');
 const { Video } = require('../models/Video');
 const Comment = require('../models/Comment');
 const { uploadMedia, deleteMedia } = require('../middleware/uploadMiddleware');
+const { clearTokenCookie } = require('../utils/tokenUtils');
 
 /**
  * @desc    Get user profile by ID or Username with their videos
@@ -173,12 +174,9 @@ const deleteUserAccount = async (req, res, next) => {
     // Delete user
     await user.deleteOne();
 
-    // If user deleted their own account, clear cookie
+    // If user deleted their own account, clear cookie symmetrically
     if (req.user._id.toString() === id) {
-      res.cookie('token', 'none', {
-        expires: new Date(Date.now() + 5 * 1000),
-        httpOnly: true,
-      });
+      clearTokenCookie(res);
     }
 
     res.status(200).json({

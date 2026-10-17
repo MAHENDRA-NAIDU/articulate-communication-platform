@@ -62,17 +62,24 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Multer Errors
-  if (err.name === 'MulterError') {
+  // Multer & File Upload Filter Errors
+  if (
+    err.name === 'MulterError' ||
+    (err.message &&
+      (err.message.includes('Invalid file type') ||
+        err.message.includes('MIME type') ||
+        err.message.includes('file format')))
+  ) {
     if (err.code === 'LIMIT_FILE_SIZE') {
+      const maxMb = process.env.MAX_VIDEO_SIZE_MB || 2048;
       return res.status(400).json({
         success: false,
-        message: 'File is too large. Maximum video size is 100MB.',
+        message: `File is too large. Maximum allowed video upload size is ${maxMb}MB (${(maxMb / 1024).toFixed(1)}GB).`,
       });
     }
     return res.status(400).json({
       success: false,
-      message: `File upload error: ${err.message}`,
+      message: err.message,
     });
   }
 
@@ -91,11 +98,17 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Default response
+  // Default response (sanitizes internal errors in production to prevent information disclosure)
   const statusCode = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
+  const isProd = process.env.NODE_ENV === 'production';
+  const defaultMsg =
+    isProd && statusCode === 500
+      ? 'An unexpected server error occurred. Please try again later.'
+      : err.message || 'An unexpected server error occurred. Please try again.';
+
   return res.status(statusCode).json({
     success: false,
-    message: err.message || 'An unexpected server error occurred. Please try again.',
+    message: defaultMsg,
   });
 };
 

@@ -115,6 +115,7 @@ export const Navbar = () => {
                     <img
                       src={user.profileImage}
                       alt={user.name}
+                      referrerPolicy="no-referrer"
                       className="user-avatar-small"
                     />
                   ) : (
@@ -251,6 +252,7 @@ export const Navbar = () => {
                 <img
                   src={user.profileImage}
                   alt={user.name}
+                  referrerPolicy="no-referrer"
                   className="mobile-user-card-avatar"
                 />
               ) : (

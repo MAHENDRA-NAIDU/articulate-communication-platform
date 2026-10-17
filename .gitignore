@@ -5,11 +5,21 @@ server/node_modules/
 
 # Environment Variables (Keep your local secrets private)
 .env
+*.env
+*.env.local
 server/.env
 server/.env.local
 server/.env.development.local
 server/.env.test.local
 server/.env.production.local
+client/.env
+client/.env.local
+client/.env.development.local
+client/.env.production.local
+
+# Large local test media files
+test_dummy_*
+*.mp4.tmp
 
 # Production Build Output
 client/dist/

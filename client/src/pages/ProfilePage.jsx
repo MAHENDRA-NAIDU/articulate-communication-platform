@@ -13,8 +13,12 @@ import {
   Camera,
   UploadCloud,
   Image,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { userService } from '../services/userService';
+import { authService } from '../services/authService';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { VideoCard } from '../components/video/VideoCard';
@@ -46,6 +50,14 @@ export const ProfilePage = () => {
   // Delete Account Modal State
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
+
+  // Change Password Modal State
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPasswords, setShowPasswords] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
 
   const fetchProfile = async () => {
     try {
@@ -135,6 +147,43 @@ export const ProfilePage = () => {
     }
   };
 
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    if (!currentPassword || !newPassword) {
+      error('Please provide current and new password.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      error('New password must be at least 6 characters long.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      error('New passwords do not match.');
+      return;
+    }
+
+    try {
+      setSavingPassword(true);
+      const data = await authService.changePassword({
+        currentPassword,
+        newPassword,
+        confirmPassword,
+      });
+
+      if (data.success) {
+        success('Password updated successfully!');
+        setPasswordModalOpen(false);
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+      }
+    } catch (err) {
+      error(err.message || 'Failed to update password. Please verify current password.');
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
   const handleDeleteAccount = async () => {
     try {
       setDeletingAccount(true);
@@ -173,6 +222,7 @@ export const ProfilePage = () => {
                 <img
                   src={profileData.profileImage}
                   alt={profileData.name}
+                  referrerPolicy="no-referrer"
                   style={styles.avatarImg}
                 />
               ) : (
@@ -218,6 +268,16 @@ export const ProfilePage = () => {
                 >
                   Edit Profile
                 </Button>
+                {currentUser && currentUser._id === profileData._id && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPasswordModalOpen(true)}
+                    icon={<KeyRound size={14} />}
+                  >
+                    Change Password
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -348,6 +408,7 @@ export const ProfilePage = () => {
                   <img
                     src={avatarPreview}
                     alt="Avatar preview"
+                    referrerPolicy="no-referrer"
                     style={styles.avatarPreviewImg}
                   />
                 ) : (
@@ -422,6 +483,104 @@ export const ProfilePage = () => {
             Yes, Permanently Delete Account
           </Button>
         </div>
+      </Modal>
+
+      {/* Change Password Modal */}
+      <Modal
+        isOpen={passwordModalOpen}
+        onClose={() => {
+          setPasswordModalOpen(false);
+          setCurrentPassword('');
+          setNewPassword('');
+          setConfirmPassword('');
+        }}
+        title="Change Password"
+        subtitle="Ensure your account stays secure with a strong password."
+      >
+        <form onSubmit={handleChangePassword}>
+          <div className="form-group">
+            <label className="form-label">Current Password</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showPasswords ? 'text' : 'password'}
+                className="form-input"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                required
+                placeholder="Enter your current password"
+                autoComplete="current-password"
+                style={{ paddingRight: '40px' }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPasswords(!showPasswords)}
+                style={{
+                  position: 'absolute',
+                  right: '12px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: '#8C827A',
+                  padding: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+                aria-label={showPasswords ? 'Hide password' : 'Show password'}
+              >
+                {showPasswords ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">New Password</label>
+            <input
+              type={showPasswords ? 'text' : 'password'}
+              className="form-input"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              minLength={6}
+              placeholder="Minimum 6 characters"
+              autoComplete="new-password"
+            />
+            <span className="form-hint">At least 6 characters required.</span>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Confirm New Password</label>
+            <input
+              type={showPasswords ? 'text' : 'password'}
+              className="form-input"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              minLength={6}
+              placeholder="Confirm new password"
+              autoComplete="new-password"
+            />
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '24px' }}>
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => {
+                setPasswordModalOpen(false);
+                setCurrentPassword('');
+                setNewPassword('');
+                setConfirmPassword('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" loading={savingPassword} icon={<KeyRound size={15} />}>
+              Update Password
+            </Button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

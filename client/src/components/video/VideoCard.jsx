@@ -82,6 +82,7 @@ export const VideoCard = ({ video }) => {
               <img
                 src={author.profileImage}
                 alt={author.name}
+                referrerPolicy="no-referrer"
                 style={styles.authorAvatar}
               />
             ) : (

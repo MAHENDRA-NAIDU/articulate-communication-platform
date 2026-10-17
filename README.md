@@ -47,8 +47,10 @@ The application features a warm, minimalist design language inspired by modern e
 - User's uploaded practice video gallery.
 - Safe account deletion with cascading cleanup of videos, comments, and media files.
 
-### 6. Security & Admin Dashboard
+### 6. Security, Authentication & Verification
 - JWT-based authentication via HTTP-only cookies and Authorization Bearer header fallback.
+- **Email Verification via 6-Digit OTP**: SHA-256 hashed storage, 10-minute expiry, max 5 attempts tracking, anti-flooding resend cooldown.
+- **Google Sign-In / OAuth 2.0**: Verified Google Identity Services (GIS) integration via `google-auth-library`. Anti-account-takeover protection strictly prohibits auto-linking existing password accounts.
 - Password hashing with `bcryptjs`.
 - Role-based authorization (`user` & `admin`).
 - Secure admin registration protected by server-side `ADMIN_INVITE_SECRET`.
@@ -65,8 +67,8 @@ The database and backend models are structured with an extensible `aiAnalysis` s
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: React 18, Vite 6, React Router DOM 6, Lucide React icons, Native CSS & CSS Modules.
-- **Backend**: Node.js, Express.js, MongoDB, Mongoose, Multer, Cloudinary SDK, Cookie-Parser, CORS, Rate-Limiting.
+- **Frontend**: React 18, Vite 6, React Router DOM 6, Lucide React icons, Google Identity Services, Native CSS & CSS Modules.
+- **Backend**: Node.js, Express.js, MongoDB, Mongoose, Multer, Cloudinary SDK, Resend SDK, Google Auth Library, Cookie-Parser, CORS, Rate-Limiting.
 
 ---
 
@@ -104,8 +106,14 @@ Visit **`http://localhost:5173`** in your browser.
 
 | Method | Endpoint | Description | Access |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/auth/register` | Register new learner (or admin with key) | Public |
-| `POST` | `/api/auth/login` | Login and issue session cookie/token | Public |
+| `POST` | `/api/auth/register` | Register new learner (creates pending unverified user & dispatches OTP) | Public |
+| `POST` | `/api/auth/verify-email` | Verify 6-digit OTP and activate account | Public |
+| `POST` | `/api/auth/resend-verification` | Resend verification code (rate-limited) | Public |
+| `POST` | `/api/auth/google` | Verify Google ID token and sign in / register | Public |
+| `POST` | `/api/auth/login` | Login and issue session cookie/token (blocks unverified users) | Public |
+| `POST` | `/api/auth/forgot-password` | Request password recovery email (single-use token) | Public |
+| `POST` | `/api/auth/reset-password` | Reset password using single-use crypto token | Public |
+| `PUT` | `/api/auth/change-password` | Change account password (requires current password) | Private |
 | `POST` | `/api/auth/logout` | Clear auth cookie | Public |
 | `GET` | `/api/auth/me` | Fetch active user session | Private |
 | `GET` | `/api/videos` | List videos with filters, search, sort | Public |
@@ -122,3 +130,126 @@ Visit **`http://localhost:5173`** in your browser.
 | `GET` | `/api/admin/stats` | Platform statistics | Private (Admin only) |
 | `GET` | `/api/admin/users` | List users for moderation | Private (Admin only) |
 | `PATCH` | `/api/admin/users/:id/status` | Suspend / activate user | Private (Admin only) |
+| `DELETE` | `/api/admin/users/:id` | Permanently delete user | Private (Admin only) |
+| `GET` | `/api/admin/videos` | List all videos for moderation | Private (Admin only) |
+| `DELETE` | `/api/admin/videos/:id` | Delete video as admin | Private (Admin only) |
+| `GET` | `/api/admin/comments` | List all comments for moderation | Private (Admin only) |
+| `DELETE` | `/api/admin/comments/:id` | Delete comment as admin | Private (Admin only) |
+
+---
+
+## 🔒 Automated Security & Integrity Suite
+
+Articulate contains an automated 49-test security suite that executes against an isolated database (`articulate_test_isolated`) without modifying primary development or seed data:
+
+```bash
+npm run test:security
+# or
+npm test --prefix server
+```
+
+Tests cover:
+- Modern defensive security headers (`nosniff`, `frameguard`, CSP with Google GIS origins, Referrer-Policy).
+- CSRF origin verification on state-changing cookie requests.
+- Account recovery token hashing (SHA-256), expiration, and single-use atomic consumption.
+- Password change session invalidation (`tokenVersion` and `passwordChangedAt` cross-checks).
+- Admin registration invite key timing-safe comparison (`crypto.timingSafeEqual`).
+- Email verification 6-digit OTP lifecycle (SHA-256 hash storage, expiration, max 5 attempts tracking, atomic clearance).
+- Google Identity Services token verification, audience check, and strict anti-account-takeover protection.
+- Search regex ReDoS sanitization (`escapeRegex`).
+- File upload extension whitelist and MIME type cross-validation.
+- Rate limiters across authentication, recovery, verification, and comment endpoints.
+
+---
+
+## ☁️ Production Deployment Guide
+
+Articulate is configured for a standard two-tier deployment: **Render** (Node.js Backend) and **Vercel** (Vite React Frontend), or as a monolithic deployment on Render.
+
+### 1. External Services Setup
+
+#### A. MongoDB Atlas (Cloud Database)
+1. Create a free cluster at [mongodb.com/atlas](https://www.mongodb.com/atlas).
+2. Under **Network Access**, allow access from your backend service IP (or `0.0.0.0/0` for dynamic cloud hosting like Render).
+3. Under **Database Access**, create a database user and password.
+4. Copy your connection string into `MONGODB_URI` in your backend environment:
+   ```text
+   mongodb+srv://<username>:<password>@cluster0.mongodb.net/communication_practice?retryWrites=true&w=majority
+   ```
+
+#### B. Resend (Email Delivery)
+1. Create an account at [resend.com](https://resend.com).
+2. Generate an API Key in your dashboard.
+3. For immediate testing, you can send from `Articulate <onboarding@resend.dev>` to your registered email address.
+4. For production, add your domain under **Domains** in Resend, add the provided DNS records (DKIM and SPF) at your domain registrar, and configure `MAIL_FROM=Articulate <no-reply@yourdomain.com>`.
+5. Test delivery directly from the command line:
+   ```bash
+   node server/scripts/testEmailDelivery.js your-email@example.com
+   ```
+
+#### C. Cloudinary (Managed Media Storage)
+1. Sign up for a free account at [cloudinary.com](https://cloudinary.com).
+2. Obtain your **Cloud Name**, **API Key**, and **API Secret** from the dashboard.
+3. Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` in your backend environment.
+4. When configured, videos and thumbnails are automatically hosted on Cloudinary's global CDN with chunked uploads (`upload_large`).
+
+#### D. Google Cloud Console (Google Sign-In)
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/).
+2. Create a new project or select an existing one.
+3. Under **APIs & Services > OAuth consent screen**, select **External**, fill in app details, and publish or add test users.
+4. Under **APIs & Services > Credentials**, click **Create Credentials > OAuth client ID**.
+5. Select **Web application**:
+   - **Authorized JavaScript origins**:
+     - Development: `http://localhost:5173`
+     - Production: `https://your-frontend-domain.vercel.app`
+   - **Authorized redirect URIs**:
+     - Development: `http://localhost:5173`
+     - Production: `https://your-frontend-domain.vercel.app`
+6. Copy the generated **Client ID**:
+   - Set in backend `.env`: `GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com`
+   - Set in frontend `.env`: `VITE_GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com`
+
+---
+
+### 2. Backend Deployment (Render Web Service)
+1. Connect your repository to Render as a **Web Service**.
+2. **Root Directory:** `server` (or run from root with build command).
+3. **Build Command:** `npm install`
+4. **Start Command:** `node server.js`
+5. **Environment Variables:**
+   - `NODE_ENV=production`
+   - `PORT=5000` (or Render default `$PORT`)
+   - `MONGODB_URI=mongodb+srv://...`
+   - `JWT_SECRET=<generate_a_random_32_plus_character_string>`
+   - `JWT_EXPIRES_IN=7d`
+   - `ADMIN_INVITE_SECRET=<choose_a_strong_admin_key>`
+   - `CLIENT_URL=https://your-frontend-app.vercel.app`
+   - `RESEND_API_KEY=re_...`
+   - `MAIL_FROM=Articulate <onboarding@resend.dev>`
+   - `RESET_TOKEN_EXPIRES_MINUTES=15`
+   - `OTP_EXPIRES_MINUTES=10`
+   - `GOOGLE_CLIENT_ID=...apps.googleusercontent.com`
+   - `CLOUDINARY_CLOUD_NAME=...`
+   - `CLOUDINARY_API_KEY=...`
+   - `CLOUDINARY_API_SECRET=...`
+   - `TRUST_PROXY=1`
+   - `COOKIE_SAMESITE=none` *(if frontend and backend are on separate domains)*
+   - `COOKIE_SECURE=true`
+
+---
+
+### 3. Frontend Deployment (Vercel)
+1. Import the repository on [vercel.com](https://vercel.com).
+2. **Root Directory:** `client`
+3. **Framework Preset:** Vite
+4. **Build Command:** `npm run build`
+5. **Output Directory:** `dist`
+6. **Environment Variables:**
+   - `VITE_API_URL=https://your-backend-service.onrender.com/api`
+   - `VITE_GOOGLE_CLIENT_ID=...apps.googleusercontent.com`
+7. In `client/vercel.json`, ensure SPA rewrites route all paths to `/index.html`:
+   ```json
+   {
+     "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+   }
+   ```

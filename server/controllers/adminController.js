@@ -2,6 +2,7 @@ const User = require('../models/User');
 const { Video } = require('../models/Video');
 const Comment = require('../models/Comment');
 const { deleteMedia } = require('../middleware/uploadMiddleware');
+const { escapeRegex } = require('../utils/sanitizeUtils');
 
 /**
  * @desc    Get dashboard statistics for Admin
@@ -52,11 +53,14 @@ const getAllUsers = async (req, res, next) => {
     const query = {};
 
     if (search && search.trim() !== '') {
-      query.$or = [
-        { name: { $regex: search.trim(), $options: 'i' } },
-        { username: { $regex: search.trim(), $options: 'i' } },
-        { email: { $regex: search.trim(), $options: 'i' } },
-      ];
+      const sanitized = escapeRegex(search);
+      if (sanitized) {
+        query.$or = [
+          { name: { $regex: sanitized, $options: 'i' } },
+          { username: { $regex: sanitized, $options: 'i' } },
+          { email: { $regex: sanitized, $options: 'i' } },
+        ];
+      }
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -189,10 +193,13 @@ const getAllVideos = async (req, res, next) => {
     }
 
     if (search && search.trim() !== '') {
-      query.$or = [
-        { title: { $regex: search.trim(), $options: 'i' } },
-        { description: { $regex: search.trim(), $options: 'i' } },
-      ];
+      const sanitized = escapeRegex(search);
+      if (sanitized) {
+        query.$or = [
+          { title: { $regex: sanitized, $options: 'i' } },
+          { description: { $regex: sanitized, $options: 'i' } },
+        ];
+      }
     }
 
     const pageNum = parseInt(page, 10) || 1;

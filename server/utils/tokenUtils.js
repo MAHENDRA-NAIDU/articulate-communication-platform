@@ -1,24 +1,62 @@
 const jwt = require('jsonwebtoken');
 
-const signToken = (userId, role) => {
+// Validate cookie configuration on startup (Fail closed if SameSite=None without Secure=true)
+const rawSameSite = (process.env.COOKIE_SAMESITE || 'lax').toLowerCase();
+const isProd = process.env.NODE_ENV === 'production';
+const isSecure = isProd || process.env.COOKIE_SECURE === 'true';
+
+if (rawSameSite === 'none' && !isSecure) {
+  throw new Error(
+    'FATAL CONFIGURATION ERROR: COOKIE_SAMESITE=none requires Secure=true (HTTPS). Insecure cross-site cookies are rejected by modern browsers.'
+  );
+}
+
+/**
+ * Sign JWT session token containing user ID, role, and token version
+ */
+const signToken = (userId, role, tokenVersion = 0) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('FATAL: JWT_SECRET environment variable is missing.');
+  }
+
   return jwt.sign(
-    { id: userId, role },
-    process.env.JWT_SECRET || 'super_secret_jwt_key_for_communication_practice_2025_safe_token',
+    {
+      id: userId,
+      role,
+      tokenVersion: typeof tokenVersion === 'number' ? tokenVersion : 0,
+    },
+    process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
 };
 
-const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
-  const token = signToken(user._id, user.role);
+/**
+ * Standard cookie configuration
+ */
+const getCookieOptions = () => ({
+  expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+  httpOnly: true,
+  secure: isSecure,
+  sameSite: rawSameSite,
+  path: '/',
+});
 
-  const cookieOptions = {
-    expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+/**
+ * Symmetrically clear session cookie with matching attributes
+ */
+const clearTokenCookie = (res) => {
+  res.clearCookie('token', {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  };
+    secure: isSecure,
+    sameSite: rawSameSite,
+    path: '/',
+  });
+};
 
-  res.cookie('token', token, cookieOptions);
+const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
+  const token = signToken(user._id, user.role, user.tokenVersion);
+
+  res.cookie('token', token, getCookieOptions());
 
   // Exclude password from output
   const userSafe = {
@@ -43,4 +81,6 @@ const sendTokenResponse = (user, statusCode, res, message = 'Success') => {
 module.exports = {
   signToken,
   sendTokenResponse,
+  getCookieOptions,
+  clearTokenCookie,
 };

@@ -1,0 +1,23 @@
+{
+  "watch": [
+    "controllers",
+    "middleware",
+    "models",
+    "routes",
+    "config",
+    "utils",
+    "server.js"
+  ],
+  "ignore": [
+    "uploads/**",
+    "uploads/*",
+    "*.mp4",
+    "*.webm",
+    "*.mov",
+    "*.mkv",
+    "*.jpg",
+    "*.png",
+    "*.log"
+  ],
+  "ext": "js,json"
+}
