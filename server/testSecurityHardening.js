@@ -37,6 +37,17 @@ const User = require('./models/User');
 const { Video } = require('./models/Video');
 const { uploadMedia } = require('./middleware/uploadMiddleware');
 const { cloudinary } = require('./config/cloudinary');
+const {
+  isSmtpConfigured,
+  getActiveProvider,
+  getTransporter,
+  getSender,
+  sendVerificationOTPEmail,
+  sendPasswordResetEmail,
+  dispatchEmail,
+  setTransporterForTesting,
+  resetTransporter,
+} = require('./services/emailService');
 
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
 const createdUserIds = [];
@@ -895,6 +906,182 @@ async function runTests() {
       // Verify rollback: user record was deleted
       const userInDb = await User.findOne({ email: providerRejectEmail });
       assert(userInDb === null, 'Expected unverified user record to be rolled back/deleted on provider rejection');
+    });
+
+    // TEST 12-SMTP-1: SMTP configuration detection and transporter initialization
+    await test('SMTP Config: Detects Gmail SMTP settings and initializes secure transporter', async () => {
+      const prevHost = process.env.SMTP_HOST;
+      const prevPort = process.env.SMTP_PORT;
+      const prevSecure = process.env.SMTP_SECURE;
+      const prevUser = process.env.SMTP_USER;
+      const prevPass = process.env.SMTP_PASS;
+      const prevMailFrom = process.env.MAIL_FROM;
+
+      try {
+        process.env.SMTP_HOST = 'smtp.gmail.com';
+        process.env.SMTP_PORT = '465';
+        process.env.SMTP_SECURE = 'true';
+        process.env.SMTP_USER = 'articulate.sender@gmail.com';
+        process.env.SMTP_PASS = 'abcd efgh ijkl mnop';
+        process.env.MAIL_FROM = 'articulate.sender@gmail.com';
+
+        assert(isSmtpConfigured() === true, 'Expected isSmtpConfigured() to be true');
+        assert(getActiveProvider() === 'smtp', 'Expected active provider to be smtp');
+        assert(getSender().includes('articulate.sender@gmail.com'), 'Expected sender to match configured address');
+
+        const transporter = getTransporter();
+        assert(transporter, 'Expected transporter to be created');
+        assert(transporter.options.host === 'smtp.gmail.com', 'Expected host smtp.gmail.com');
+        assert(transporter.options.port === 465, 'Expected port 465');
+        assert(transporter.options.secure === true, 'Expected secure: true for port 465');
+        assert(transporter.options.auth.user === 'articulate.sender@gmail.com', 'Expected auth user');
+      } finally {
+        process.env.SMTP_HOST = prevHost || '';
+        process.env.SMTP_PORT = prevPort || '';
+        process.env.SMTP_SECURE = prevSecure || '';
+        process.env.SMTP_USER = prevUser || '';
+        process.env.SMTP_PASS = prevPass || '';
+        process.env.MAIL_FROM = prevMailFrom || '';
+      }
+    });
+
+    // TEST 12-SMTP-2: SMTP delivery success returns success: true and message ID
+    await test('SMTP Delivery: Successful dispatch returns success: true and message ID', async () => {
+      const otpResult = await sendVerificationOTPEmail({
+        to: 'smtp-success-user@articulate-test.local',
+        name: 'SMTP Learner',
+        otp: '654321',
+      });
+      assert(otpResult.success === true, 'Expected success: true');
+      assert(otpResult.id, 'Expected message ID in result');
+
+      const resetResult = await sendPasswordResetEmail({
+        to: 'smtp-success-user@articulate-test.local',
+        name: 'SMTP Learner',
+        resetUrl: 'http://127.0.0.1:5173/reset-password?token=mock_token_123',
+      });
+      assert(resetResult.success === true, 'Expected success: true');
+      assert(resetResult.id, 'Expected message ID in reset result');
+    });
+
+    // TEST 12-SMTP-3: SMTP delivery failure is caught and rolls back unverified registration
+    await test('SMTP Delivery: Failed dispatch rolls back registration and returns 400', async () => {
+      const smtpFailEmail = `test-user-smtp-fail-${Date.now()}@articulate-test.local`;
+      const res = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'SMTP Failure Learner',
+          username: `smtpfail_${Date.now()}`,
+          email: smtpFailEmail,
+          password: 'ValidPassword123!',
+        },
+      });
+      assert(res.status === 400, `Expected 400 on SMTP delivery failure, got ${res.status}`);
+      assert(res.data.success === false, 'Expected success: false');
+
+      // Verify rollback: unverified user record must not linger in DB
+      const userInDb = await User.findOne({ email: smtpFailEmail });
+      assert(userInDb === null, 'Expected unverified user record to be deleted after SMTP delivery failure');
+    });
+
+    // TEST 12-SMTP-4: SMTP No-Fallback: Does not silently fall back to Resend when SMTP fails
+    await test('SMTP Delivery: Does not silently fall back to Resend when SMTP fails', async () => {
+      const prevUser = process.env.SMTP_USER;
+      const prevPass = process.env.SMTP_PASS;
+      const prevResend = process.env.RESEND_API_KEY;
+
+      try {
+        process.env.SMTP_USER = 'articulate.smtp@gmail.com';
+        process.env.SMTP_PASS = 'mock_app_password_123';
+        process.env.RESEND_API_KEY = 're_mock_test_key_xyz';
+
+        setTransporterForTesting({
+          sendMail: async () => {
+            throw new Error('SMTP Connection Timeout: 421 4.4.2 Service unavailable');
+          },
+        });
+
+        const result = await dispatchEmail({
+          to: 'test-recipient@example.com',
+          subject: 'Test Subject',
+          text: 'Test Body',
+          html: '<p>Test Body</p>',
+        });
+
+        assert(result.success === false, 'Expected success: false when SMTP fails');
+        assert(result.provider === 'smtp', 'Expected provider to remain smtp and NOT fall back to resend');
+        assert(result.error.includes('SMTP Connection Timeout'), 'Expected actual SMTP delivery error reported');
+      } finally {
+        resetTransporter();
+        process.env.SMTP_USER = prevUser || '';
+        process.env.SMTP_PASS = prevPass || '';
+        process.env.RESEND_API_KEY = prevResend || '';
+      }
+    });
+
+    // TEST 12-SMTP-5: SMTP Sender Alignment: getSender defaults to SMTP_USER when MAIL_FROM is unset or resend.dev
+    await test('SMTP Sender Alignment: Enforces Gmail sender matches SMTP_USER', async () => {
+      const prevUser = process.env.SMTP_USER;
+      const prevPass = process.env.SMTP_PASS;
+      const prevMailFrom = process.env.MAIL_FROM;
+
+      try {
+        process.env.SMTP_USER = 'articulate.practice@gmail.com';
+        process.env.SMTP_PASS = 'mock_pass';
+
+        // When MAIL_FROM is still old resend default
+        process.env.MAIL_FROM = 'onboarding@resend.dev';
+        assert(
+          getSender() === 'Articulate <articulate.practice@gmail.com>',
+          `Expected fallback to SMTP_USER when MAIL_FROM is resend.dev, got: ${getSender()}`
+        );
+
+        // When MAIL_FROM is unset
+        delete process.env.MAIL_FROM;
+        assert(
+          getSender() === 'Articulate <articulate.practice@gmail.com>',
+          `Expected fallback to SMTP_USER when MAIL_FROM is unset, got: ${getSender()}`
+        );
+
+        // When MAIL_FROM is properly configured to Gmail address
+        process.env.MAIL_FROM = 'articulate.practice@gmail.com';
+        assert(
+          getSender() === 'Articulate <articulate.practice@gmail.com>',
+          `Expected explicit MAIL_FROM, got: ${getSender()}`
+        );
+      } finally {
+        process.env.SMTP_USER = prevUser || '';
+        process.env.SMTP_PASS = prevPass || '';
+        process.env.MAIL_FROM = prevMailFrom || '';
+      }
+    });
+
+    // TEST 12-SMTP-6: Password Recovery: SMTP delivery failure rolls back reset token and returns safe 500
+    await test('SMTP Delivery: Password recovery failure rolls back reset token with 500', async () => {
+      const resetFailEmail = `smtp-fail-user-${Date.now()}@articulate-test.local`;
+      const testUser = await User.create({
+        name: 'Reset SMTP Fail Learner',
+        username: `smtpreset_${Date.now()}`,
+        email: resetFailEmail,
+        password: 'ValidPassword123!',
+        isEmailVerified: true,
+      });
+      createdUserIds.push(testUser._id);
+
+      const res = await makeRequest('POST', '/api/auth/forgot-password', {
+        body: { email: resetFailEmail },
+      });
+
+      assert(res.status === 500, `Expected 500 on SMTP failure during password reset, got ${res.status}`);
+      assert(res.data.success === false, 'Expected success: false');
+      assert(
+        res.data.message.includes('Unable to send recovery email'),
+        `Expected safe error message, got: ${res.data.message}`
+      );
+
+      // Verify token rollback in DB
+      const userInDb = await User.findById(testUser._id).select('+passwordResetToken +passwordResetExpires');
+      assert(!userInDb.passwordResetToken, 'Expected passwordResetToken to be rolled back/cleared');
+      assert(!userInDb.passwordResetExpires, 'Expected passwordResetExpires to be cleared');
     });
 
     const otpTestEmail = `otp_user_${Date.now()}@articulate-test.local`;

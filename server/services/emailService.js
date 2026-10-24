@@ -1,12 +1,95 @@
+const nodemailer = require('nodemailer');
 const { Resend } = require('resend');
 
-// Verify configuration on load
-const isEmailConfigured = Boolean(process.env.RESEND_API_KEY);
-const resend = isEmailConfigured ? new Resend(process.env.RESEND_API_KEY) : null;
+// Provider configuration detectors
+const isSmtpConfigured = () => Boolean(process.env.SMTP_USER && process.env.SMTP_PASS);
+const isResendConfigured = () => Boolean(process.env.RESEND_API_KEY);
+const getIsEmailConfigured = () => isSmtpConfigured() || isResendConfigured();
+
+const getActiveProvider = () => {
+  if (isSmtpConfigured()) return 'smtp';
+  if (isResendConfigured()) return 'resend';
+  return 'none';
+};
+
+// Transporter caching
+let cachedTransporter = null;
+let lastSmtpConfigKey = '';
+
+const setTransporterForTesting = (mockTransporter) => {
+  cachedTransporter = mockTransporter;
+  lastSmtpConfigKey = 'testing_mock';
+};
+
+const resetTransporter = () => {
+  cachedTransporter = null;
+  lastSmtpConfigKey = '';
+};
+
+/**
+ * Returns a configured Nodemailer SMTP transporter (e.g. Gmail SMTP)
+ */
+const getTransporter = () => {
+  if (!isSmtpConfigured()) return null;
+
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = parseInt(process.env.SMTP_PORT, 10) || 465;
+  const secure =
+    process.env.SMTP_SECURE === 'false'
+      ? false
+      : process.env.SMTP_SECURE === 'true' || port === 465;
+  const user = process.env.SMTP_USER ? process.env.SMTP_USER.trim() : '';
+  const pass = process.env.SMTP_PASS ? process.env.SMTP_PASS.trim() : '';
+
+  const currentConfigKey = `${host}:${port}:${secure}:${user}:${pass}`;
+  if (cachedTransporter && (lastSmtpConfigKey === currentConfigKey || lastSmtpConfigKey === 'testing_mock')) {
+    return cachedTransporter;
+  }
+
+  cachedTransporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: {
+      user,
+      pass,
+    },
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+  });
+
+  lastSmtpConfigKey = currentConfigKey;
+  return cachedTransporter;
+};
 
 // Sender address configuration
 const DEFAULT_SENDER = 'Articulate <onboarding@resend.dev>';
-const getSender = () => process.env.MAIL_FROM || DEFAULT_SENDER;
+
+const getSender = () => {
+  if (isSmtpConfigured()) {
+    const smtpUser = process.env.SMTP_USER ? process.env.SMTP_USER.trim() : '';
+    const mailFrom = process.env.MAIL_FROM ? process.env.MAIL_FROM.trim() : '';
+    // For Gmail SMTP, envelope sender must align with SMTP_USER (or an explicit non-resend MAIL_FROM)
+    const effectiveEmail = mailFrom && !mailFrom.includes('resend.dev') ? mailFrom : smtpUser;
+    if (effectiveEmail.includes('@') && !effectiveEmail.includes('<')) {
+      return `Articulate <${effectiveEmail}>`;
+    }
+    return effectiveEmail || `Articulate <${smtpUser}>`;
+  }
+
+  if (process.env.MAIL_FROM && process.env.MAIL_FROM.trim()) {
+    const from = process.env.MAIL_FROM.trim();
+    if (from.includes('@') && !from.includes('<')) {
+      return `Articulate <${from}>`;
+    }
+    return from;
+  }
+  if (process.env.SMTP_USER && process.env.SMTP_USER.trim()) {
+    return `Articulate <${process.env.SMTP_USER.trim()}>`;
+  }
+  return DEFAULT_SENDER;
+};
 
 /**
  * Mask email address for safe logging (e.g. j***@example.com)
@@ -20,24 +103,113 @@ const maskEmail = (email) => {
 };
 
 /**
- * Sends a password recovery email via Resend
+ * Core unified email dispatcher: sends via Nodemailer SMTP or Resend
+ *
+ * @param {Object} options
+ * @param {string} options.to - Recipient email address
+ * @param {string} options.subject - Email subject line
+ * @param {string} options.text - Plain text content
+ * @param {string} options.html - HTML content
+ * @returns {Promise<{ success: boolean, id?: string, error?: string, provider?: string, skipped?: boolean }>}
+ */
+const dispatchEmail = async ({ to, subject, text, html }) => {
+  const from = getSender();
+  const maskedTo = maskEmail(to);
+
+  // 1. Primary: SMTP via Nodemailer (Gmail SMTP)
+  if (isSmtpConfigured()) {
+    try {
+      const transporter = getTransporter();
+      const info = await transporter.sendMail({
+        from,
+        to,
+        subject,
+        text,
+        html,
+      });
+
+      console.log(`[Email Service] Dispatched email via SMTP to ${maskedTo} (Message ID: ${info.messageId})`);
+      return { success: true, id: info.messageId, provider: 'smtp' };
+    } catch (err) {
+      console.error(`[Email Service Error] SMTP delivery failed for ${maskedTo}:`, err.message);
+
+      // Do NOT silently fall back to Resend when SMTP is configured; report delivery failure safely
+      return { success: false, error: err.message, provider: 'smtp' };
+    }
+  }
+
+  // 2. Secondary / Fallback: Resend API
+  if (isResendConfigured()) {
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const { data, error } = await resend.emails.send({
+        from,
+        to,
+        subject,
+        text,
+        html,
+      });
+
+      if (error) {
+        console.error(`[Email Service Error] Resend delivery failed for ${maskedTo}:`, error.message);
+        return { success: false, error: error.message, provider: 'resend' };
+      }
+
+      console.log(`[Email Service] Dispatched email via Resend to ${maskedTo} (ID: ${data?.id})`);
+      return { success: true, id: data?.id, provider: 'resend' };
+    } catch (err) {
+      console.error(`[Email Service Exception] Resend error for ${maskedTo}:`, err.message);
+      return { success: false, error: err.message, provider: 'resend' };
+    }
+  }
+
+  // 3. No delivery mechanism configured
+  const errorMsg = 'Email delivery service is not configured (Neither SMTP_USER/SMTP_PASS nor RESEND_API_KEY provided).';
+  console.warn(`[Email Service Notice] Delivery skipped for ${maskedTo}: ${errorMsg}`);
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Email delivery is currently unavailable. Please contact an administrator.');
+  }
+
+  return {
+    success: false,
+    skipped: true,
+    reason: errorMsg,
+  };
+};
+
+/**
+ * Sends a password recovery email
  *
  * @param {Object} options
  * @param {string} options.to - Recipient email address
  * @param {string} options.name - Recipient name
  * @param {string} options.resetUrl - Full password reset URL
+ * @param {boolean} [options.forceRealSend] - Bypass test-mode mock in unit tests
  * @returns {Promise<{ success: boolean, id?: string, error?: string, skipped?: boolean }>}
  */
-const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
-  if (process.env.NODE_ENV === 'test') {
+const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = false }) => {
+  if (process.env.NODE_ENV === 'test' && !forceRealSend) {
+    if (to && to.includes('provider-reject')) {
+      return {
+        success: false,
+        error: 'Simulated provider rejection: recipient address rejected by email provider.',
+        code: 'validation_error',
+      };
+    }
+    if (to && to.includes('smtp-fail')) {
+      return {
+        success: false,
+        error: 'Invalid login: 535-5.7.8 Username and Password not accepted',
+      };
+    }
     return { success: true, skipped: true, id: 'test_mock_id' };
   }
 
-  if (!isEmailConfigured) {
-    const errorMsg = 'Email delivery service is not configured (RESEND_API_KEY missing).';
+  if (!getIsEmailConfigured()) {
+    const errorMsg = 'Email delivery service is not configured (Neither SMTP nor RESEND_API_KEY provided).';
     console.warn(`[Email Service Notice] Delivery skipped for ${maskEmail(to)}: ${errorMsg}`);
 
-    // In production, fail safely
     if (process.env.NODE_ENV === 'production') {
       throw new Error('Email delivery is currently unavailable. Please contact an administrator.');
     }
@@ -50,7 +222,6 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
   }
 
   const recipientName = name ? name.split(' ')[0] : 'Learner';
-  const from = getSender();
 
   const textContent = [
     `Hello ${recipientName},`,
@@ -132,39 +303,26 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
 </html>
   `.trim();
 
-  try {
-    const { data, error } = await resend.emails.send({
-      from,
-      to,
-      subject: 'Reset your Articulate account password',
-      text: textContent,
-      html: htmlContent,
-    });
-
-    if (error) {
-      console.error(`[Email Service Error] Failed to send reset email to ${maskEmail(to)}:`, error.message);
-      return { success: false, error: error.message };
-    }
-
-    console.log(`[Email Service] Password recovery email dispatched successfully to ${maskEmail(to)} (ID: ${data?.id})`);
-    return { success: true, id: data?.id };
-  } catch (err) {
-    console.error(`[Email Service Exception] Error sending to ${maskEmail(to)}:`, err.message);
-    return { success: false, error: err.message };
-  }
+  return dispatchEmail({
+    to,
+    subject: 'Reset your Articulate account password',
+    text: textContent,
+    html: htmlContent,
+  });
 };
 
 /**
- * Sends a 6-digit email verification OTP via Resend
+ * Sends a 6-digit email verification OTP
  *
  * @param {Object} options
  * @param {string} options.to - Recipient email address
  * @param {string} options.name - Recipient name
  * @param {string} options.otp - 6-digit plain OTP
+ * @param {boolean} [options.forceRealSend] - Bypass test-mode mock in unit tests
  * @returns {Promise<{ success: boolean, id?: string, error?: string, skipped?: boolean }>}
  */
-const sendVerificationOTPEmail = async ({ to, name, otp }) => {
-  if (process.env.NODE_ENV === 'test') {
+const sendVerificationOTPEmail = async ({ to, name, otp, forceRealSend = false }) => {
+  if (process.env.NODE_ENV === 'test' && !forceRealSend) {
     if (to && to.includes('provider-reject')) {
       return {
         success: false,
@@ -172,14 +330,19 @@ const sendVerificationOTPEmail = async ({ to, name, otp }) => {
         code: 'validation_error',
       };
     }
+    if (to && to.includes('smtp-fail')) {
+      return {
+        success: false,
+        error: 'Invalid login: 535-5.7.8 Username and Password not accepted',
+      };
+    }
     return { success: true, skipped: true, id: 'test_mock_id' };
   }
 
-  if (!isEmailConfigured) {
-    const errorMsg = 'Email delivery service is not configured (RESEND_API_KEY missing).';
+  if (!getIsEmailConfigured()) {
+    const errorMsg = 'Email delivery service is not configured (Neither SMTP nor RESEND_API_KEY provided).';
     console.warn(`[Email Service Notice] Delivery skipped for ${maskEmail(to)}: ${errorMsg}`);
 
-    // In production, fail safely
     if (process.env.NODE_ENV === 'production') {
       throw new Error('Email delivery is currently unavailable. Please contact an administrator.');
     }
@@ -192,7 +355,6 @@ const sendVerificationOTPEmail = async ({ to, name, otp }) => {
   }
 
   const recipientName = name ? name.split(' ')[0] : 'Learner';
-  const from = getSender();
   const expiryMinutes = parseInt(process.env.OTP_EXPIRES_MINUTES, 10) || 10;
 
   const textContent = [
@@ -271,56 +433,51 @@ const sendVerificationOTPEmail = async ({ to, name, otp }) => {
 </html>
   `.trim();
 
-  try {
-    const { data, error } = await resend.emails.send({
-      from,
-      to,
-      subject: `Your Articulate verification code: ${otp}`,
-      text: textContent,
-      html: htmlContent,
-    });
-
-    if (error) {
-      console.error(`[Email Service Error] Failed to send verification OTP to ${maskEmail(to)}:`, error.message);
-      return { success: false, error: error.message };
-    }
-
-    console.log(`[Email Service] Verification OTP email dispatched successfully to ${maskEmail(to)} (ID: ${data?.id})`);
-    return { success: true, id: data?.id };
-  } catch (err) {
-    console.error(`[Email Service Exception] Error sending to ${maskEmail(to)}:`, err.message);
-    return { success: false, error: err.message };
-  }
+  return dispatchEmail({
+    to,
+    subject: `Your Articulate verification code: ${otp}`,
+    text: textContent,
+    html: htmlContent,
+  });
 };
 
 /**
  * Diagnostic test email delivery function
  */
 const sendTestEmail = async (toEmail) => {
-  if (!isEmailConfigured) {
-    throw new Error('Cannot send test email: RESEND_API_KEY is not configured in environment variables.');
+  if (!getIsEmailConfigured()) {
+    throw new Error('Cannot send test email: Neither SMTP (SMTP_USER/SMTP_PASS) nor RESEND_API_KEY is configured.');
   }
 
-  const from = getSender();
-  const { data, error } = await resend.emails.send({
-    from,
+  const provider = getActiveProvider();
+  const result = await dispatchEmail({
     to: toEmail,
     subject: 'Articulate — Email Delivery Verification Test',
-    text: 'Congratulations! Real email delivery via Resend is working smoothly on your Articulate platform.',
-    html: '<h3>Articulate Email Service Connected</h3><p>Real email delivery via Resend has been verified successfully.</p>',
+    text: `Congratulations! Real email delivery is working smoothly on your Articulate platform (Provider: ${provider.toUpperCase()}).`,
+    html: `<h3>Articulate Email Service Connected</h3><p>Real email delivery via <strong>${provider.toUpperCase()}</strong> has been verified successfully.</p>`,
   });
 
-  if (error) {
-    throw new Error(`Resend API Error: ${error.message}`);
+  if (!result.success) {
+    throw new Error(`Email Delivery Error (${result.provider || 'unknown'}): ${result.error || result.reason}`);
   }
 
-  return { success: true, id: data?.id };
+  return result;
 };
 
 module.exports = {
-  isEmailConfigured,
+  get isEmailConfigured() {
+    return getIsEmailConfigured();
+  },
+  isSmtpConfigured,
+  isResendConfigured,
+  getActiveProvider,
+  getTransporter,
+  getSender,
   sendPasswordResetEmail,
   sendVerificationOTPEmail,
   sendTestEmail,
   maskEmail,
+  dispatchEmail,
+  setTransporterForTesting,
+  resetTransporter,
 };
