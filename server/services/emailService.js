@@ -161,13 +161,15 @@ const getBrevoSender = () => {
  * Sends transactional email via Brevo HTTPS API (v3)
  * Endpoint: https://api.brevo.com/v3/smtp/email
  */
-const sendBrevoEmail = async ({ to, subject, text, html }) => {
+const sendBrevoEmail = async ({ to, name, subject, text, html }) => {
   const maskedTo = maskEmail(to);
   const sender = getBrevoSender();
 
+  const recipient = name ? { email: to, name } : { email: to };
+
   const payload = {
     sender,
-    to: [{ email: to }],
+    to: [recipient],
     subject,
     htmlContent: html,
     textContent: text,
@@ -273,14 +275,14 @@ const isNetworkError = (err) => {
  * @param {string} options.html - HTML content
  * @returns {Promise<{ success: boolean, id?: string, error?: string, provider?: string, skipped?: boolean }>}
  */
-const dispatchEmail = async ({ to, subject, text, html }) => {
+const dispatchEmail = async ({ to, name, subject, text, html }) => {
   const maskedTo = maskEmail(to);
 
   // 1. Primary: Brevo HTTPS API (when BREVO_API_KEY is configured)
   // Operates over HTTPS (port 443) and is never blocked by cloud hosting platforms.
   // When Brevo is configured, OTP and password-reset messages use Brevo directly without trying SMTP.
   if (isBrevoConfigured()) {
-    return sendBrevoEmail({ to, subject, text, html });
+    return sendBrevoEmail({ to, name, subject, text, html });
   }
 
   // 2. Secondary: SMTP via Nodemailer (Gmail SMTP)
@@ -491,6 +493,7 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = fals
 
   return dispatchEmail({
     to,
+    name: recipientName,
     subject: 'Reset your Articulate account password',
     text: textContent,
     html: htmlContent,
@@ -628,6 +631,7 @@ const sendVerificationOTPEmail = async ({ to, name, otp, forceRealSend = false }
 
   return dispatchEmail({
     to,
+    name: recipientName,
     subject: `Your Articulate verification code: ${otp}`,
     text: textContent,
     html: htmlContent,

@@ -694,21 +694,34 @@ const forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
 
-    if (!email || typeof email !== 'string' || !/^\S+@\S+\.\S+$/.test(email.trim())) {
+    if (!email || typeof email !== 'string') {
       return res.status(400).json({
         success: false,
-        message: 'Please provide a valid email address.',
+        message: 'Please provide a valid email address or username.',
       });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanInput = email.trim().toLowerCase();
+    const isEmail = /^\S+@\S+\.\S+$/.test(cleanInput);
+    const isUsername = /^[a-zA-Z0-9_]{3,30}$/.test(cleanInput);
+
+    if (!isEmail && !isUsername) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address or username.',
+      });
+    }
+
     const genericMessage =
       'If an account exists with that email address, a password recovery link has been sent.';
 
-    const user = await User.findOne({ email: cleanEmail });
+    // Look up user by email OR username
+    const user = await User.findOne({
+      $or: [{ email: cleanInput }, { username: cleanInput }],
+    });
 
-    // Always return generic response to prevent account enumeration
-    if (!user || !user.isActive || !user.isEmailVerified || (user.authProvider === 'google' && !user.password)) {
+    // Always return generic response to prevent account enumeration if user doesn't exist, is deactivated, or unverified
+    if (!user || !user.isActive || !user.isEmailVerified) {
       return res.status(200).json({
         success: true,
         message: genericMessage,
@@ -719,10 +732,26 @@ const forgotPassword = async (req, res, next) => {
     const resetToken = user.createPasswordResetToken();
     await user.save({ validateBeforeSave: false });
 
-    // Construct secure recovery URL using configured frontend URL
-    const clientUrl = process.env.CLIENT_URL
+    // Construct secure recovery URL using configured frontend URL or dynamically from request headers
+    let clientUrl = process.env.CLIENT_URL
       ? process.env.CLIENT_URL.split(',')[0].trim().replace(/\/+$/, '')
-      : 'http://localhost:5173';
+      : '';
+
+    if (!clientUrl || (process.env.NODE_ENV === 'production' && clientUrl.includes('localhost'))) {
+      const origin = req.get('origin');
+      if (origin && !origin.includes('localhost')) {
+        clientUrl = origin.replace(/\/+$/, '');
+      } else {
+        const host = req.get('host');
+        const proto = req.get('x-forwarded-proto') || req.protocol || 'https';
+        clientUrl = `${proto}://${host}`.replace(/\/+$/, '');
+      }
+    }
+
+    if (!clientUrl) {
+      clientUrl = 'http://localhost:5173';
+    }
+
     const resetUrl = `${clientUrl}/reset-password?token=${resetToken}`;
 
     try {

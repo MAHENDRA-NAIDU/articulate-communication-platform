@@ -1318,6 +1318,121 @@ async function runTests() {
       assert(!userInDb.passwordResetExpires, 'Expected passwordResetExpires to be cleared');
     });
 
+    // TEST 12-BREVO-7: Brevo Delivery: Password reset email dispatch passes recipient name & reset link
+    await test('Brevo Delivery: Password reset dispatch passes recipient name & recovery URL to Brevo API', async () => {
+      const prevBrevo = process.env.BREVO_API_KEY;
+
+      try {
+        process.env.BREVO_API_KEY = 'xkeysib_mock_key_for_testing_123';
+        let capturedPayload = null;
+
+        setBrevoClientForTesting(async (payload) => {
+          capturedPayload = payload;
+          return {
+            success: true,
+            id: '<202610242200.mock-reset-id@smtp-relay.brevo.com>',
+            provider: 'brevo',
+          };
+        });
+
+        const result = await sendPasswordResetEmail({
+          to: 'reset-learner@example.com',
+          name: 'Reset Learner',
+          resetUrl: 'https://articulate-communication-platform.onrender.com/reset-password?token=mock_crypto_token_123',
+          forceRealSend: true,
+        });
+
+        assert(result.success === true, 'Expected success: true');
+        assert(result.provider === 'brevo', `Expected provider: 'brevo', got: ${result.provider}`);
+        assert(capturedPayload !== null, 'Expected Brevo client to be called');
+        assert(capturedPayload.to[0].email === 'reset-learner@example.com', 'Expected recipient email');
+        assert(capturedPayload.to[0].name === 'Reset', 'Expected parsed recipient name');
+        assert(capturedPayload.htmlContent.includes('mock_crypto_token_123'), 'Expected reset URL token in html');
+        assert(capturedPayload.textContent.includes('mock_crypto_token_123'), 'Expected reset URL token in text');
+      } finally {
+        resetBrevoClient();
+        if (prevBrevo !== undefined) process.env.BREVO_API_KEY = prevBrevo;
+        else delete process.env.BREVO_API_KEY;
+      }
+    });
+
+    // TEST 12-BREVO-8: Google Account Password Recovery: Allows Google-authenticated users without local password to set one
+    await test('Password Recovery: Google-authenticated user without password can request recovery and set a password', async () => {
+      const googleUserEmail = `google_recovery_user_${Date.now()}@articulate-test.local`;
+      const googleUser = await User.create({
+        name: 'Google Recovery Learner',
+        username: `googlerecov_${Date.now()}`,
+        email: googleUserEmail,
+        googleId: `google_oauth_sub_${Date.now()}`,
+        authProvider: 'google',
+        isEmailVerified: true,
+        tokenVersion: 0,
+      });
+      createdUserIds.push(googleUser._id);
+
+      // Request password reset for Google user
+      const forgotRes = await makeRequest('POST', '/api/auth/forgot-password', {
+        body: { email: googleUserEmail },
+      });
+      assert(forgotRes.status === 200, `Expected 200 for Google user password recovery, got ${forgotRes.status}`);
+      assert(forgotRes.data.success === true, 'Expected success: true');
+
+      // Verify token was generated in database
+      const userInDb = await User.findById(googleUser._id).select('+passwordResetToken +passwordResetExpires');
+      assert(typeof userInDb.passwordResetToken === 'string', 'Expected passwordResetToken to be generated for Google user');
+      assert(userInDb.passwordResetExpires > Date.now(), 'Expected valid future expiration');
+
+      // Create a known plain token in memory to test completing the reset
+      const plainToken = userInDb.createPasswordResetToken();
+      await userInDb.save({ validateBeforeSave: false });
+
+      // Reset password with valid token
+      const newLocalPass = 'NewGoogleUserPassword2026!';
+      const resetRes = await makeRequest('POST', '/api/auth/reset-password', {
+        body: {
+          token: plainToken,
+          newPassword: newLocalPass,
+          confirmPassword: newLocalPass,
+        },
+      });
+      assert(resetRes.status === 200, `Expected 200 on password reset completion, got ${resetRes.status}`);
+      assert(resetRes.data.success === true, 'Expected success: true');
+
+      // Verify token is single-use and cleared from DB
+      const userAfterReset = await User.findById(googleUser._id).select('+password +passwordResetToken');
+      assert(!userAfterReset.passwordResetToken, 'Expected token to be consumed');
+
+      // Verify user can now log in using email and the newly set password
+      const loginRes = await makeRequest('POST', '/api/auth/login', {
+        body: { identifier: googleUserEmail, password: newLocalPass },
+      });
+      assert(loginRes.status === 200, `Expected 200 login with newly set password, got ${loginRes.status}`);
+      assert(loginRes.data.token, 'Expected JWT token in login response');
+    });
+
+    // TEST 12-BREVO-9: Password Recovery: Supports requesting recovery using username
+    await test('Password Recovery: Supports requesting recovery using username', async () => {
+      const usernameEmail = `user_by_name_${Date.now()}@articulate-test.local`;
+      const testUsername = `userbyname_${Date.now()}`;
+      const usernameUser = await User.create({
+        name: 'Username Recovery Learner',
+        username: testUsername,
+        email: usernameEmail,
+        password: 'ValidPassword123!',
+        isEmailVerified: true,
+      });
+      createdUserIds.push(usernameUser._id);
+
+      const res = await makeRequest('POST', '/api/auth/forgot-password', {
+        body: { email: testUsername }, // submitted username into identifier/email field
+      });
+      assert(res.status === 200, `Expected 200 when requesting by username, got ${res.status}`);
+      assert(res.data.success === true, 'Expected success: true');
+
+      const userInDb = await User.findById(usernameUser._id).select('+passwordResetToken');
+      assert(typeof userInDb.passwordResetToken === 'string', 'Expected passwordResetToken generated in DB');
+    });
+
     const otpTestEmail = `otp_user_${Date.now()}@articulate-test.local`;
     const otpTestPassword = 'OtpSecurePassword2026!';
     let otpUserId = null;

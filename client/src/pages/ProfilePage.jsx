@@ -16,6 +16,9 @@ import {
   KeyRound,
   Eye,
   EyeOff,
+  Mail,
+  CheckCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { userService } from '../services/userService';
 import { authService } from '../services/authService';
@@ -58,6 +61,12 @@ export const ProfilePage = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPasswords, setShowPasswords] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+
+  // Forgot Password Recovery State (from Profile)
+  const [forgotModalOpen, setForgotModalOpen] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotSuccess, setForgotSuccess] = useState(false);
+  const [forgotCooldown, setForgotCooldown] = useState(0);
 
   const fetchProfile = async () => {
     try {
@@ -184,6 +193,39 @@ export const ProfilePage = () => {
     }
   };
 
+  // Cooldown timer for resending recovery email
+  useEffect(() => {
+    let timer;
+    if (forgotCooldown > 0) {
+      timer = setTimeout(() => setForgotCooldown(forgotCooldown - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [forgotCooldown]);
+
+  const handleProfileForgotPassword = async () => {
+    const targetEmail = currentUser?.email || profileData?.email;
+    if (!targetEmail) {
+      error('User email address is unavailable.');
+      return;
+    }
+
+    try {
+      setForgotLoading(true);
+      const data = await authService.forgotPassword(targetEmail);
+      if (data.success) {
+        setForgotSuccess(true);
+        setForgotCooldown(60);
+        success('Password recovery email dispatched! Please check your inbox.');
+      } else {
+        error(data.message || 'Unable to send recovery email. Please try again.');
+      }
+    } catch (err) {
+      error(err.message || 'Failed to send recovery email. Please try again later.');
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
   const handleDeleteAccount = async () => {
     try {
       setDeletingAccount(true);
@@ -269,14 +311,27 @@ export const ProfilePage = () => {
                   Edit Profile
                 </Button>
                 {currentUser && currentUser._id === profileData._id && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPasswordModalOpen(true)}
-                    icon={<KeyRound size={14} />}
-                  >
-                    Change Password
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPasswordModalOpen(true)}
+                      icon={<KeyRound size={14} />}
+                    >
+                      Change Password
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setForgotModalOpen(true);
+                        setForgotSuccess(false);
+                      }}
+                      icon={<Mail size={14} />}
+                    >
+                      Forgot Password?
+                    </Button>
+                  </>
                 )}
                 <Button
                   variant="ghost"
@@ -498,8 +553,71 @@ export const ProfilePage = () => {
         subtitle="Ensure your account stays secure with a strong password."
       >
         <form onSubmit={handleChangePassword}>
+          {profileData.authProvider === 'google' && (
+            <div
+              style={{
+                backgroundColor: '#FAF7F2',
+                border: '1px solid #EADBCE',
+                borderRadius: '8px',
+                padding: '12px 14px',
+                marginBottom: '16px',
+                fontSize: '0.86rem',
+                color: '#5C554E',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+              }}
+            >
+              <Mail size={16} color="#E05D38" style={{ flexShrink: 0 }} />
+              <div>
+                <span>You registered via Google. Don't have a current password? </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPasswordModalOpen(false);
+                    setForgotModalOpen(true);
+                    setForgotSuccess(false);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#E05D38',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    padding: 0,
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Set a password via email recovery
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="form-group">
-            <label className="form-label">Current Password</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <label className="form-label" style={{ margin: 0 }}>Current Password</label>
+              <button
+                type="button"
+                onClick={() => {
+                  setPasswordModalOpen(false);
+                  setForgotModalOpen(true);
+                  setForgotSuccess(false);
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#E05D38',
+                  fontSize: '0.82rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  padding: 0,
+                  textDecoration: 'underline',
+                }}
+              >
+                Forgot Password?
+              </button>
+            </div>
             <div style={{ position: 'relative' }}>
               <input
                 type={showPasswords ? 'text' : 'password'}
@@ -581,6 +699,112 @@ export const ProfilePage = () => {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Forgot Password Recovery Modal from Profile */}
+      <Modal
+        isOpen={forgotModalOpen}
+        onClose={() => {
+          setForgotModalOpen(false);
+          setForgotSuccess(false);
+        }}
+        title="Reset Password via Email"
+        subtitle="Recover your account or set a new password without needing your current password."
+      >
+        {forgotSuccess ? (
+          <div style={{ textAlign: 'center', padding: '12px 0 6px 0' }}>
+            <div
+              style={{
+                width: '52px',
+                height: '52px',
+                borderRadius: '50%',
+                backgroundColor: '#E8F5E9',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: '14px',
+              }}
+            >
+              <CheckCircle size={28} color="#2E7D32" />
+            </div>
+            <h3 style={{ fontSize: '1.15rem', color: '#191716', margin: '0 0 8px 0' }}>
+              Check Your Inbox
+            </h3>
+            <p style={{ color: '#5C554E', fontSize: '0.92rem', lineHeight: '1.6', margin: '0 0 20px 0' }}>
+              A secure password recovery link has been sent to{' '}
+              <strong>{currentUser?.email || profileData?.email}</strong>.
+              The link is valid for 15 minutes and will allow you to choose a new password.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px' }}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleProfileForgotPassword}
+                loading={forgotLoading}
+                disabled={forgotCooldown > 0}
+                icon={<RefreshCw size={14} />}
+              >
+                {forgotCooldown > 0 ? `Resend link in ${forgotCooldown}s` : 'Resend Recovery Link'}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setForgotModalOpen(false);
+                  setForgotSuccess(false);
+                }}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <p style={{ color: '#5C554E', fontSize: '0.93rem', lineHeight: '1.6', marginBottom: '18px' }}>
+              We will send a single-use password recovery link to your registered email address:
+            </p>
+            <div
+              style={{
+                backgroundColor: '#FAF7F2',
+                border: '1px solid #EADBCE',
+                borderRadius: '10px',
+                padding: '14px 16px',
+                marginBottom: '20px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+              }}
+            >
+              <Mail size={20} color="#E05D38" />
+              <div>
+                <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#8C827A', fontWeight: '700', letterSpacing: '0.5px' }}>
+                  Registered Email
+                </div>
+                <div style={{ fontSize: '0.96rem', fontWeight: '600', color: '#191716' }}>
+                  {currentUser?.email || profileData?.email}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => setForgotModalOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                type="button"
+                loading={forgotLoading}
+                onClick={handleProfileForgotPassword}
+                icon={<Mail size={15} />}
+              >
+                Send Recovery Link
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

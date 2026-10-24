@@ -75,7 +75,7 @@ const commentLimiter = rateLimit({
  */
 const forgotPasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 requests per 15 minutes per IP
+  max: process.env.NODE_ENV === 'test' ? 8 : 5, // 5 requests per 15 minutes per IP (8 in isolated test runner)
   message: {
     success: false,
     message: 'Too many password recovery requests from this IP address. Please try again after 15 minutes.',

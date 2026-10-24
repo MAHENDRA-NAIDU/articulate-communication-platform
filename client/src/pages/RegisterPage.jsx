@@ -172,7 +172,7 @@ export const RegisterPage = () => {
                   <input
                     type="text"
                     className="form-input"
-                    placeholder="e.g. Mahendra Rao"
+                    placeholder="e.g. Enter Your Name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     required
@@ -186,7 +186,7 @@ export const RegisterPage = () => {
                   <input
                     type="text"
                     className="form-input"
-                    placeholder="e.g. mahendra"
+                    placeholder="e.g. Enter Your Username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
                     required
@@ -202,7 +202,7 @@ export const RegisterPage = () => {
                   <input
                     type="email"
                     className="form-input"
-                    placeholder="e.g. mahendra@example.com"
+                    placeholder="e.g. email@gmail.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
