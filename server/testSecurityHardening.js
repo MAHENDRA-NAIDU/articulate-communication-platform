@@ -42,6 +42,8 @@ const {
   getActiveProvider,
   getTransporter,
   getSender,
+  getResendSender,
+  isNetworkError,
   sendVerificationOTPEmail,
   sendPasswordResetEmail,
   dispatchEmail,
@@ -983,8 +985,43 @@ async function runTests() {
       assert(userInDb === null, 'Expected unverified user record to be deleted after SMTP delivery failure');
     });
 
-    // TEST 12-SMTP-4: SMTP No-Fallback: Does not silently fall back to Resend when SMTP fails
-    await test('SMTP Delivery: Does not silently fall back to Resend when SMTP fails', async () => {
+    // TEST 12-SMTP-4a: SMTP network error (port blocked) falls back to Resend HTTP API
+    await test('SMTP Delivery: Falls back to Resend on network/connection errors (e.g. Render port block)', async () => {
+      const prevUser = process.env.SMTP_USER;
+      const prevPass = process.env.SMTP_PASS;
+      const prevResend = process.env.RESEND_API_KEY;
+
+      try {
+        process.env.SMTP_USER = 'articulate.smtp@gmail.com';
+        process.env.SMTP_PASS = 'mock_app_password_123';
+        process.env.RESEND_API_KEY = 're_mock_test_key_xyz';
+
+        // Simulate a network-level connection timeout (like Render blocking port 465)
+        const networkErr = new Error('connect ETIMEDOUT 142.250.4.108:465');
+        networkErr.code = 'ETIMEDOUT';
+        setTransporterForTesting({
+          sendMail: async () => { throw networkErr; },
+        });
+
+        const result = await dispatchEmail({
+          to: 'test-recipient@example.com',
+          subject: 'Test Subject',
+          text: 'Test Body',
+          html: '<p>Test Body</p>',
+        });
+
+        // Should have fallen through to Resend (which fails with fake key, but provider should be 'resend')
+        assert(result.provider === 'resend', `Expected fallback to resend on network error, got provider: ${result.provider}`);
+      } finally {
+        resetTransporter();
+        process.env.SMTP_USER = prevUser || '';
+        process.env.SMTP_PASS = prevPass || '';
+        process.env.RESEND_API_KEY = prevResend || '';
+      }
+    });
+
+    // TEST 12-SMTP-4b: SMTP auth error does NOT fall back to Resend
+    await test('SMTP Delivery: Does not fall back to Resend on authentication errors', async () => {
       const prevUser = process.env.SMTP_USER;
       const prevPass = process.env.SMTP_PASS;
       const prevResend = process.env.RESEND_API_KEY;
@@ -996,7 +1033,7 @@ async function runTests() {
 
         setTransporterForTesting({
           sendMail: async () => {
-            throw new Error('SMTP Connection Timeout: 421 4.4.2 Service unavailable');
+            throw new Error('Invalid login: 535-5.7.8 Username and Password not accepted');
           },
         });
 
@@ -1007,9 +1044,9 @@ async function runTests() {
           html: '<p>Test Body</p>',
         });
 
-        assert(result.success === false, 'Expected success: false when SMTP fails');
-        assert(result.provider === 'smtp', 'Expected provider to remain smtp and NOT fall back to resend');
-        assert(result.error.includes('SMTP Connection Timeout'), 'Expected actual SMTP delivery error reported');
+        assert(result.success === false, 'Expected success: false when SMTP auth fails');
+        assert(result.provider === 'smtp', 'Expected provider to remain smtp on auth error (no fallback)');
+        assert(result.error.includes('Username and Password not accepted'), 'Expected actual auth error reported');
       } finally {
         resetTransporter();
         process.env.SMTP_USER = prevUser || '';

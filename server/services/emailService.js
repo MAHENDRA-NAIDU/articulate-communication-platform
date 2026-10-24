@@ -92,6 +92,25 @@ const getSender = () => {
 };
 
 /**
+ * Returns a Resend-API-compatible sender address.
+ * Resend requires the sender domain to be verified on their platform,
+ * or use the sandbox address onboarding@resend.dev.
+ * Gmail addresses are NOT valid Resend senders (domain not verified).
+ */
+const getResendSender = () => {
+  const mailFrom = process.env.MAIL_FROM ? process.env.MAIL_FROM.trim() : '';
+  // Strip display name to get raw email for domain check
+  const rawEmail = mailFrom.replace(/.*<(.+)>.*/, '$1').trim();
+  // If MAIL_FROM is a custom verified domain (not Gmail, not Resend sandbox), use it
+  if (rawEmail && rawEmail.includes('@') && !rawEmail.endsWith('gmail.com') && !rawEmail.endsWith('resend.dev')) {
+    if (mailFrom.includes('<')) return mailFrom; // Already has display name
+    return `Articulate <${rawEmail}>`;
+  }
+  // Default to Resend sandbox sender
+  return DEFAULT_SENDER;
+};
+
+/**
  * Mask email address for safe logging (e.g. j***@example.com)
  */
 const maskEmail = (email) => {
@@ -103,7 +122,36 @@ const maskEmail = (email) => {
 };
 
 /**
- * Core unified email dispatcher: sends via Nodemailer SMTP or Resend
+ * Detect network-level errors that indicate the hosting platform blocks SMTP ports.
+ * Distinguished from authentication or TLS configuration errors.
+ */
+const isNetworkError = (err) => {
+  const code = (err.code || '').toUpperCase();
+  const msg = (err.message || '').toLowerCase();
+  return (
+    code === 'ESOCKET' ||
+    code === 'ECONNECTION' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'EHOSTUNREACH' ||
+    msg.includes('connection timeout') ||
+    msg.includes('connect etimedout') ||
+    msg.includes('connect econnrefused')
+  );
+};
+
+/**
+ * Core unified email dispatcher: sends via Nodemailer SMTP or Resend.
+ *
+ * Behaviour:
+ * - Primary: SMTP (Gmail) when SMTP_USER + SMTP_PASS are set.
+ * - If SMTP fails with a **network error** (timeout, refused — common on cloud
+ *   platforms that block outbound SMTP ports) AND Resend is also configured,
+ *   the dispatcher automatically falls back to the Resend HTTP API.
+ * - If SMTP fails with an **auth/config error**, it is reported directly
+ *   without fallback so the operator can fix their credentials.
+ * - Secondary: Resend API when SMTP is not configured.
  *
  * @param {Object} options
  * @param {string} options.to - Recipient email address
@@ -113,11 +161,11 @@ const maskEmail = (email) => {
  * @returns {Promise<{ success: boolean, id?: string, error?: string, provider?: string, skipped?: boolean }>}
  */
 const dispatchEmail = async ({ to, subject, text, html }) => {
-  const from = getSender();
   const maskedTo = maskEmail(to);
 
   // 1. Primary: SMTP via Nodemailer (Gmail SMTP)
   if (isSmtpConfigured()) {
+    const from = getSender();
     try {
       const transporter = getTransporter();
       const info = await transporter.sendMail({
@@ -133,13 +181,24 @@ const dispatchEmail = async ({ to, subject, text, html }) => {
     } catch (err) {
       console.error(`[Email Service Error] SMTP delivery failed for ${maskedTo}:`, err.message);
 
-      // Do NOT silently fall back to Resend when SMTP is configured; report delivery failure safely
-      return { success: false, error: err.message, provider: 'smtp' };
+      // Network-level failure (timeout, refused, socket) → platform likely blocks SMTP ports.
+      // Fall back to Resend HTTP API if it is also configured.
+      if (isNetworkError(err) && isResendConfigured()) {
+        console.warn(
+          `[Email Service] SMTP port appears blocked by hosting platform. ` +
+          `Falling back to Resend HTTP API for ${maskedTo}.`
+        );
+        // Fall through to Resend below
+      } else {
+        // Auth errors, TLS errors, etc. → report directly, do NOT fall back
+        return { success: false, error: err.message, provider: 'smtp' };
+      }
     }
   }
 
-  // 2. Secondary / Fallback: Resend API
+  // 2. Resend HTTP API (primary when SMTP is unconfigured, or fallback on SMTP network errors)
   if (isResendConfigured()) {
+    const from = getResendSender();
     try {
       const resend = new Resend(process.env.RESEND_API_KEY);
       const { data, error } = await resend.emails.send({
@@ -473,6 +532,8 @@ module.exports = {
   getActiveProvider,
   getTransporter,
   getSender,
+  getResendSender,
+  isNetworkError,
   sendPasswordResetEmail,
   sendVerificationOTPEmail,
   sendTestEmail,
