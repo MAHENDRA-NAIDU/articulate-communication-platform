@@ -2,11 +2,13 @@ const nodemailer = require('nodemailer');
 const { Resend } = require('resend');
 
 // Provider configuration detectors
+const isBrevoConfigured = () => Boolean(process.env.BREVO_API_KEY && process.env.BREVO_API_KEY.trim());
 const isSmtpConfigured = () => Boolean(process.env.SMTP_USER && process.env.SMTP_PASS);
 const isResendConfigured = () => Boolean(process.env.RESEND_API_KEY);
-const getIsEmailConfigured = () => isSmtpConfigured() || isResendConfigured();
+const getIsEmailConfigured = () => isBrevoConfigured() || isSmtpConfigured() || isResendConfigured();
 
 const getActiveProvider = () => {
+  if (isBrevoConfigured()) return 'brevo';
   if (isSmtpConfigured()) return 'smtp';
   if (isResendConfigured()) return 'resend';
   return 'none';
@@ -24,6 +26,17 @@ const setTransporterForTesting = (mockTransporter) => {
 const resetTransporter = () => {
   cachedTransporter = null;
   lastSmtpConfigKey = '';
+};
+
+// Mock client for unit testing Brevo HTTP API
+let mockBrevoClient = null;
+
+const setBrevoClientForTesting = (mockFn) => {
+  mockBrevoClient = mockFn;
+};
+
+const resetBrevoClient = () => {
+  mockBrevoClient = null;
 };
 
 /**
@@ -111,6 +124,106 @@ const getResendSender = () => {
 };
 
 /**
+ * Returns sender information formatted for Brevo API ({ name, email }).
+ * Uses BREVO_SENDER_EMAIL & BREVO_SENDER_NAME if provided,
+ * otherwise parses MAIL_FROM, SMTP_USER, or falls back to a clean default.
+ */
+const getBrevoSender = () => {
+  const customEmail = process.env.BREVO_SENDER_EMAIL ? process.env.BREVO_SENDER_EMAIL.trim() : '';
+  const customName = process.env.BREVO_SENDER_NAME ? process.env.BREVO_SENDER_NAME.trim() : 'Articulate';
+
+  if (customEmail) {
+    return { name: customName, email: customEmail };
+  }
+
+  const mailFrom = process.env.MAIL_FROM ? process.env.MAIL_FROM.trim() : '';
+  if (mailFrom) {
+    const match = mailFrom.match(/^(.*?)\s*<(.+)>$/);
+    if (match) {
+      return {
+        name: match[1].replace(/["']/g, '').trim() || 'Articulate',
+        email: match[2].trim(),
+      };
+    }
+    if (mailFrom.includes('@')) {
+      return { name: 'Articulate', email: mailFrom };
+    }
+  }
+
+  if (process.env.SMTP_USER && process.env.SMTP_USER.trim()) {
+    return { name: 'Articulate', email: process.env.SMTP_USER.trim() };
+  }
+
+  return { name: 'Articulate', email: 'no-reply@articulate.app' };
+};
+
+/**
+ * Sends transactional email via Brevo HTTPS API (v3)
+ * Endpoint: https://api.brevo.com/v3/smtp/email
+ */
+const sendBrevoEmail = async ({ to, subject, text, html }) => {
+  const maskedTo = maskEmail(to);
+  const sender = getBrevoSender();
+
+  const payload = {
+    sender,
+    to: [{ email: to }],
+    subject,
+    htmlContent: html,
+    textContent: text,
+  };
+
+  if (mockBrevoClient) {
+    try {
+      const mockResult = await mockBrevoClient(payload);
+      return mockResult;
+    } catch (mockErr) {
+      console.error(`[Email Service Error] Brevo delivery failed for ${maskedTo}:`, mockErr.message);
+      return { success: false, error: mockErr.message, provider: 'brevo' };
+    }
+  }
+
+  const apiKey = process.env.BREVO_API_KEY ? process.env.BREVO_API_KEY.trim() : '';
+  if (!apiKey) {
+    return { success: false, error: 'BREVO_API_KEY is not configured', provider: 'brevo' };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'api-key': apiKey,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json().catch(() => ({}));
+      const messageId = data.messageId || `brevo_${Date.now()}`;
+      console.log(`[Email Service] Dispatched email via Brevo HTTPS API to ${maskedTo} (Message ID: ${messageId})`);
+      return { success: true, id: messageId, provider: 'brevo' };
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    const errorMessage = errorData.message || `Brevo API HTTP ${response.status}: ${response.statusText}`;
+    console.error(`[Email Service Error] Brevo delivery failed for ${maskedTo}: ${errorMessage}`);
+    return { success: false, error: errorMessage, provider: 'brevo' };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const errorMsg = err.name === 'AbortError' ? 'Brevo API request timed out' : err.message;
+    console.error(`[Email Service Exception] Brevo error for ${maskedTo}:`, errorMsg);
+    return { success: false, error: errorMsg, provider: 'brevo' };
+  }
+};
+
+/**
  * Mask email address for safe logging (e.g. j***@example.com)
  */
 const maskEmail = (email) => {
@@ -163,7 +276,14 @@ const isNetworkError = (err) => {
 const dispatchEmail = async ({ to, subject, text, html }) => {
   const maskedTo = maskEmail(to);
 
-  // 1. Primary: SMTP via Nodemailer (Gmail SMTP)
+  // 1. Primary: Brevo HTTPS API (when BREVO_API_KEY is configured)
+  // Operates over HTTPS (port 443) and is never blocked by cloud hosting platforms.
+  // When Brevo is configured, OTP and password-reset messages use Brevo directly without trying SMTP.
+  if (isBrevoConfigured()) {
+    return sendBrevoEmail({ to, subject, text, html });
+  }
+
+  // 2. Secondary: SMTP via Nodemailer (Gmail SMTP)
   if (isSmtpConfigured()) {
     const from = getSender();
     try {
@@ -222,8 +342,8 @@ const dispatchEmail = async ({ to, subject, text, html }) => {
     }
   }
 
-  // 3. No delivery mechanism configured
-  const errorMsg = 'Email delivery service is not configured (Neither SMTP_USER/SMTP_PASS nor RESEND_API_KEY provided).';
+  // 4. No delivery mechanism configured
+  const errorMsg = 'Email delivery service is not configured (Neither BREVO_API_KEY, SMTP_USER/SMTP_PASS, nor RESEND_API_KEY provided).';
   console.warn(`[Email Service Notice] Delivery skipped for ${maskedTo}: ${errorMsg}`);
 
   if (process.env.NODE_ENV === 'production') {
@@ -262,11 +382,18 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = fals
         error: 'Invalid login: 535-5.7.8 Username and Password not accepted',
       };
     }
+    if (to && to.includes('brevo-fail')) {
+      return {
+        success: false,
+        error: 'Key not found: Unauthorized',
+        provider: 'brevo',
+      };
+    }
     return { success: true, skipped: true, id: 'test_mock_id' };
   }
 
   if (!getIsEmailConfigured()) {
-    const errorMsg = 'Email delivery service is not configured (Neither SMTP nor RESEND_API_KEY provided).';
+    const errorMsg = 'Email delivery service is not configured (Neither BREVO_API_KEY, SMTP, nor RESEND_API_KEY provided).';
     console.warn(`[Email Service Notice] Delivery skipped for ${maskEmail(to)}: ${errorMsg}`);
 
     if (process.env.NODE_ENV === 'production') {
@@ -395,11 +522,18 @@ const sendVerificationOTPEmail = async ({ to, name, otp, forceRealSend = false }
         error: 'Invalid login: 535-5.7.8 Username and Password not accepted',
       };
     }
+    if (to && to.includes('brevo-fail')) {
+      return {
+        success: false,
+        error: 'Key not found: Unauthorized',
+        provider: 'brevo',
+      };
+    }
     return { success: true, skipped: true, id: 'test_mock_id' };
   }
 
   if (!getIsEmailConfigured()) {
-    const errorMsg = 'Email delivery service is not configured (Neither SMTP nor RESEND_API_KEY provided).';
+    const errorMsg = 'Email delivery service is not configured (Neither BREVO_API_KEY, SMTP, nor RESEND_API_KEY provided).';
     console.warn(`[Email Service Notice] Delivery skipped for ${maskEmail(to)}: ${errorMsg}`);
 
     if (process.env.NODE_ENV === 'production') {
@@ -505,7 +639,7 @@ const sendVerificationOTPEmail = async ({ to, name, otp, forceRealSend = false }
  */
 const sendTestEmail = async (toEmail) => {
   if (!getIsEmailConfigured()) {
-    throw new Error('Cannot send test email: Neither SMTP (SMTP_USER/SMTP_PASS) nor RESEND_API_KEY is configured.');
+    throw new Error('Cannot send test email: Neither BREVO_API_KEY, SMTP (SMTP_USER/SMTP_PASS), nor RESEND_API_KEY is configured.');
   }
 
   const provider = getActiveProvider();
@@ -527,12 +661,15 @@ module.exports = {
   get isEmailConfigured() {
     return getIsEmailConfigured();
   },
+  isBrevoConfigured,
   isSmtpConfigured,
   isResendConfigured,
   getActiveProvider,
   getTransporter,
   getSender,
   getResendSender,
+  getBrevoSender,
+  sendBrevoEmail,
   isNetworkError,
   sendPasswordResetEmail,
   sendVerificationOTPEmail,
@@ -541,4 +678,6 @@ module.exports = {
   dispatchEmail,
   setTransporterForTesting,
   resetTransporter,
+  setBrevoClientForTesting,
+  resetBrevoClient,
 };

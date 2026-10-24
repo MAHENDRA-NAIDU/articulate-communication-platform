@@ -38,17 +38,22 @@ const { Video } = require('./models/Video');
 const { uploadMedia } = require('./middleware/uploadMiddleware');
 const { cloudinary } = require('./config/cloudinary');
 const {
+  isBrevoConfigured,
   isSmtpConfigured,
+  isResendConfigured,
   getActiveProvider,
   getTransporter,
   getSender,
   getResendSender,
+  getBrevoSender,
   isNetworkError,
   sendVerificationOTPEmail,
   sendPasswordResetEmail,
   dispatchEmail,
   setTransporterForTesting,
   resetTransporter,
+  setBrevoClientForTesting,
+  resetBrevoClient,
 } = require('./services/emailService');
 
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
@@ -1109,6 +1114,198 @@ async function runTests() {
       });
 
       assert(res.status === 500, `Expected 500 on SMTP failure during password reset, got ${res.status}`);
+      assert(res.data.success === false, 'Expected success: false');
+      assert(
+        res.data.message.includes('Unable to send recovery email'),
+        `Expected safe error message, got: ${res.data.message}`
+      );
+
+      // Verify token rollback in DB
+      const userInDb = await User.findById(testUser._id).select('+passwordResetToken +passwordResetExpires');
+      assert(!userInDb.passwordResetToken, 'Expected passwordResetToken to be rolled back/cleared');
+      assert(!userInDb.passwordResetExpires, 'Expected passwordResetExpires to be cleared');
+    });
+
+    // TEST 12-BREVO-1: Brevo Config & Provider Precedence
+    await test('Brevo Config: Prioritizes Brevo HTTPS API when BREVO_API_KEY is configured', async () => {
+      const prevBrevo = process.env.BREVO_API_KEY;
+      const prevUser = process.env.SMTP_USER;
+      const prevPass = process.env.SMTP_PASS;
+      const prevResend = process.env.RESEND_API_KEY;
+
+      try {
+        process.env.BREVO_API_KEY = 'xkeysib_mock_key_for_testing_123';
+        process.env.SMTP_USER = 'smtp.user@gmail.com';
+        process.env.SMTP_PASS = 'smtp_pass';
+        process.env.RESEND_API_KEY = 're_mock_test_key';
+
+        assert(isBrevoConfigured() === true, 'Expected isBrevoConfigured() to be true');
+        assert(getActiveProvider() === 'brevo', `Expected active provider to be 'brevo', got: ${getActiveProvider()}`);
+      } finally {
+        if (prevBrevo !== undefined) process.env.BREVO_API_KEY = prevBrevo;
+        else delete process.env.BREVO_API_KEY;
+        if (prevUser !== undefined) process.env.SMTP_USER = prevUser;
+        else delete process.env.SMTP_USER;
+        if (prevPass !== undefined) process.env.SMTP_PASS = prevPass;
+        else delete process.env.SMTP_PASS;
+        if (prevResend !== undefined) process.env.RESEND_API_KEY = prevResend;
+        else delete process.env.RESEND_API_KEY;
+      }
+    });
+
+    // TEST 12-BREVO-2: Brevo Sender Formatting
+    await test('Brevo Sender: Resolves verified sender and display name correctly', async () => {
+      const prevBrevoEmail = process.env.BREVO_SENDER_EMAIL;
+      const prevBrevoName = process.env.BREVO_SENDER_NAME;
+      const prevMailFrom = process.env.MAIL_FROM;
+
+      try {
+        // Case A: Custom Brevo sender email and name
+        process.env.BREVO_SENDER_EMAIL = 'custom@articulate.com';
+        process.env.BREVO_SENDER_NAME = 'Custom Articulate';
+        const senderA = getBrevoSender();
+        assert(senderA.email === 'custom@articulate.com', 'Expected custom sender email');
+        assert(senderA.name === 'Custom Articulate', 'Expected custom sender name');
+
+        // Case B: MAIL_FROM formatted as "Articulate <me@gmail.com>"
+        delete process.env.BREVO_SENDER_EMAIL;
+        delete process.env.BREVO_SENDER_NAME;
+        process.env.MAIL_FROM = 'Articulate Support <support@articulate.com>';
+        const senderB = getBrevoSender();
+        assert(senderB.email === 'support@articulate.com', 'Expected parsed email from MAIL_FROM');
+        assert(senderB.name === 'Articulate Support', 'Expected parsed name from MAIL_FROM');
+
+        // Case C: Plain email in MAIL_FROM
+        process.env.MAIL_FROM = 'admin@articulate.com';
+        const senderC = getBrevoSender();
+        assert(senderC.email === 'admin@articulate.com', 'Expected plain email from MAIL_FROM');
+        assert(senderC.name === 'Articulate', 'Expected default name Articulate');
+      } finally {
+        if (prevBrevoEmail !== undefined) process.env.BREVO_SENDER_EMAIL = prevBrevoEmail;
+        else delete process.env.BREVO_SENDER_EMAIL;
+        if (prevBrevoName !== undefined) process.env.BREVO_SENDER_NAME = prevBrevoName;
+        else delete process.env.BREVO_SENDER_NAME;
+        if (prevMailFrom !== undefined) process.env.MAIL_FROM = prevMailFrom;
+        else delete process.env.MAIL_FROM;
+      }
+    });
+
+    // TEST 12-BREVO-3: Brevo Delivery Success (Mocked)
+    await test('Brevo Delivery: Successful dispatch returns success: true and message ID', async () => {
+      const prevBrevo = process.env.BREVO_API_KEY;
+
+      try {
+        process.env.BREVO_API_KEY = 'xkeysib_mock_key_for_testing_123';
+        let capturedPayload = null;
+
+        setBrevoClientForTesting(async (payload) => {
+          capturedPayload = payload;
+          return {
+            success: true,
+            id: '<202610242200.mock-brevo-id@smtp-relay.brevo.com>',
+            provider: 'brevo',
+          };
+        });
+
+        const result = await dispatchEmail({
+          to: 'learner@example.com',
+          subject: 'Welcome to Articulate',
+          text: 'Plain text body',
+          html: '<p>HTML body</p>',
+        });
+
+        assert(result.success === true, 'Expected success: true');
+        assert(result.provider === 'brevo', `Expected provider: 'brevo', got: ${result.provider}`);
+        assert(result.id.includes('mock-brevo-id'), 'Expected Brevo messageId in response');
+        assert(capturedPayload.to[0].email === 'learner@example.com', 'Expected recipient in payload');
+        assert(capturedPayload.htmlContent === '<p>HTML body</p>', 'Expected htmlContent in payload');
+      } finally {
+        resetBrevoClient();
+        if (prevBrevo !== undefined) process.env.BREVO_API_KEY = prevBrevo;
+        else delete process.env.BREVO_API_KEY;
+      }
+    });
+
+    // TEST 12-BREVO-4: Brevo Delivery Failure (Mocked) - Strict No-Fallback
+    await test('Brevo Delivery: Provider failure does not fall back to SMTP or Resend', async () => {
+      const prevBrevo = process.env.BREVO_API_KEY;
+      const prevUser = process.env.SMTP_USER;
+      const prevPass = process.env.SMTP_PASS;
+      const prevResend = process.env.RESEND_API_KEY;
+
+      try {
+        process.env.BREVO_API_KEY = 'xkeysib_mock_key_for_testing_123';
+        process.env.SMTP_USER = 'articulate.smtp@gmail.com';
+        process.env.SMTP_PASS = 'mock_pass';
+        process.env.RESEND_API_KEY = 're_mock_test_key_xyz';
+
+        setBrevoClientForTesting(async () => {
+          return {
+            success: false,
+            error: 'Key not found: Unauthorized',
+            provider: 'brevo',
+          };
+        });
+
+        const result = await dispatchEmail({
+          to: 'learner@example.com',
+          subject: 'Test Subject',
+          text: 'Test Body',
+          html: '<p>Test Body</p>',
+        });
+
+        assert(result.success === false, 'Expected success: false on Brevo failure');
+        assert(result.provider === 'brevo', `Expected provider to remain 'brevo', got: ${result.provider}`);
+        assert(result.error.includes('Key not found'), 'Expected actual Brevo provider error');
+      } finally {
+        resetBrevoClient();
+        if (prevBrevo !== undefined) process.env.BREVO_API_KEY = prevBrevo;
+        else delete process.env.BREVO_API_KEY;
+        if (prevUser !== undefined) process.env.SMTP_USER = prevUser;
+        else delete process.env.SMTP_USER;
+        if (prevPass !== undefined) process.env.SMTP_PASS = prevPass;
+        else delete process.env.SMTP_PASS;
+        if (prevResend !== undefined) process.env.RESEND_API_KEY = prevResend;
+        else delete process.env.RESEND_API_KEY;
+      }
+    });
+
+    // TEST 12-BREVO-5: Brevo Delivery: Registration failure rolls back unverified account
+    await test('Brevo Delivery: Failed dispatch rolls back registration and returns 400', async () => {
+      const brevoFailEmail = `test-user-brevo-fail-${Date.now()}@articulate-test.local`;
+      const res = await makeRequest('POST', '/api/auth/register', {
+        body: {
+          name: 'Brevo Failure Learner',
+          username: `brevofail_${Date.now()}`,
+          email: brevoFailEmail,
+          password: 'ValidPassword123!',
+        },
+      });
+      assert(res.status === 400, `Expected 400 on Brevo delivery failure, got ${res.status}`);
+      assert(res.data.success === false, 'Expected success: false');
+
+      // Verify rollback: unverified user record must not linger in DB
+      const userInDb = await User.findOne({ email: brevoFailEmail });
+      assert(userInDb === null, 'Expected unverified user record to be deleted after Brevo delivery failure');
+    });
+
+    // TEST 12-BREVO-6: Brevo Delivery: Password recovery failure rolls back reset token with 500
+    await test('Brevo Delivery: Password recovery failure rolls back reset token with 500', async () => {
+      const resetFailEmail = `brevo-fail-user-${Date.now()}@articulate-test.local`;
+      const testUser = await User.create({
+        name: 'Reset Brevo Fail Learner',
+        username: `brevoreset_${Date.now()}`,
+        email: resetFailEmail,
+        password: 'ValidPassword123!',
+        isEmailVerified: true,
+      });
+      createdUserIds.push(testUser._id);
+
+      const res = await makeRequest('POST', '/api/auth/forgot-password', {
+        body: { email: resetFailEmail },
+      });
+
+      assert(res.status === 500, `Expected 500 on Brevo failure during password reset, got ${res.status}`);
       assert(res.data.success === false, 'Expected success: false');
       assert(
         res.data.message.includes('Unable to send recovery email'),
