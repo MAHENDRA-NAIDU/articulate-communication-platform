@@ -137,10 +137,12 @@ router.get('/env-check', (req, res) => {
     BREVO_SENDER_NAME: process.env.BREVO_SENDER_NAME || '(NOT SET)',
     BREVO_REPLY_TO: process.env.BREVO_REPLY_TO || '(NOT SET)',
     MAIL_FROM: process.env.MAIL_FROM || '(NOT SET)',
-    SMTP_USER: process.env.SMTP_USER ? `${process.env.SMTP_USER.substring(0, 6)}...` : '(NOT SET)',
+    SMTP_HOST: process.env.SMTP_HOST || '(NOT SET - defaults to smtp.gmail.com)',
+    SMTP_PORT: process.env.SMTP_PORT || '(NOT SET - defaults to 465)',
+    SMTP_USER: process.env.SMTP_USER ? `${process.env.SMTP_USER.substring(0, 20)}...` : '(NOT SET)',
     SMTP_PASS: process.env.SMTP_PASS ? '(SET)' : '(NOT SET)',
     CLIENT_URL: process.env.CLIENT_URL || '(NOT SET)',
-    RESEND_API_KEY: process.env.RESEND_API_KEY ? '(SET)' : '(NOT SET)',
+    RESEND_API_KEY: process.env.RESEND_API_KEY ? mask(process.env.RESEND_API_KEY) : '(NOT SET)',
   });
 });
 
