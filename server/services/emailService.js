@@ -154,8 +154,8 @@ const getBrevoSender = () => {
     return { name: customName, email: process.env.SMTP_USER.trim() };
   }
 
-  // Fallback to user's verified Brevo sender to prevent Brevo 400 rejection
-  return { name: customName, email: 'mahendranaidumeesala@gmail.com' };
+  // Fallback to user's verified Brevo relay domain which has 100% compliant SPF and DKIM
+  return { name: customName, email: 'mahendranaidumeesala@12570071.brevosend.com' };
 };
 
 /**
@@ -168,9 +168,15 @@ const sendBrevoEmail = async ({ to, name, subject, text, html }) => {
 
   const recipient = name ? { email: to, name } : { email: to };
 
+  const replyToEmail =
+    process.env.BREVO_REPLY_TO ||
+    process.env.SMTP_USER ||
+    'mahendranaidumeesala@gmail.com';
+
   const payload = {
     sender,
     to: [recipient],
+    replyTo: { email: replyToEmail.trim(), name: sender.name },
     subject,
     htmlContent: html,
     textContent: text,
