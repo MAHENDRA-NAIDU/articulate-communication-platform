@@ -151,10 +151,11 @@ const getBrevoSender = () => {
   }
 
   if (process.env.SMTP_USER && process.env.SMTP_USER.trim()) {
-    return { name: 'Articulate', email: process.env.SMTP_USER.trim() };
+    return { name: customName, email: process.env.SMTP_USER.trim() };
   }
 
-  return { name: 'Articulate', email: 'no-reply@articulate.app' };
+  // Fallback to user's verified Brevo sender to prevent Brevo 400 rejection
+  return { name: customName, email: 'mahendranaidumeesala@gmail.com' };
 };
 
 /**

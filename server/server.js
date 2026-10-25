@@ -21,18 +21,15 @@ const adminRoutes = require('./routes/adminRoutes');
 // Initialize app
 const app = express();
 
-// Proxy configuration: Do not blindly trust all proxies.
-// In dev: defaults to false (prevents IP spoofing).
-// In production: explicitly configured via TRUST_PROXY (e.g. 1, 2, or CIDR).
+// Proxy configuration:
+// On Render, Cloudflare, and cloud edge hosts, trust the first edge proxy hop (1).
 const rawTrustProxy = process.env.TRUST_PROXY;
-let trustProxySetting = false;
-if (rawTrustProxy === 'true') trustProxySetting = true;
-else if (rawTrustProxy === 'false') trustProxySetting = false;
+let trustProxySetting = 1; // Default to 1 (trust edge proxy) for Render / cloud deployments
+if (rawTrustProxy === 'false') trustProxySetting = false;
+else if (rawTrustProxy === 'true') trustProxySetting = true;
 else if (rawTrustProxy && !isNaN(rawTrustProxy)) trustProxySetting = parseInt(rawTrustProxy, 10);
 else if (rawTrustProxy) trustProxySetting = rawTrustProxy;
-else if (process.env.NODE_ENV === 'production') {
-  console.warn('[Security Notice] TRUST_PROXY is not set in production. Defaulting to false (no proxy trusted). Set TRUST_PROXY=1 if running behind an edge proxy.');
-}
+else if (process.env.NODE_ENV === 'test') trustProxySetting = false;
 app.set('trust proxy', trustProxySetting);
 
 // Connect to MongoDB Database
