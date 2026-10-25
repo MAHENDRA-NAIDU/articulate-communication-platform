@@ -40,9 +40,8 @@ router.get('/me', protect, getMe);
 
 /**
  * @route   GET /api/auth/test-email?to=you@example.com
- * @desc    Diagnostic: sends a real email via the configured provider and returns full response.
- *          Remove or protect this route once email delivery is confirmed working.
- * @access  Public (temporary diagnostic — not rate-limited intentionally)
+ * @desc    Diagnostic: tests BOTH Resend and Brevo independently and returns both results.
+ * @access  Public (temporary diagnostic)
  */
 router.get('/test-email', async (req, res) => {
   const to = (req.query.to || '').trim();
@@ -50,37 +49,53 @@ router.get('/test-email', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Please provide a valid ?to=email@example.com query parameter.' });
   }
 
-  const provider = emailService.getActiveProvider();
-  const sender = emailService.isBrevoConfigured()
-    ? emailService.getBrevoSender()
-    : { email: 'N/A (Brevo not configured)' };
+  const results = {};
 
-  try {
-    const result = await emailService.dispatchEmail({
+  // Test Resend independently
+  if (emailService.isResendConfigured()) {
+    try {
+      const { Resend } = require('resend');
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const resendSender = emailService.getResendSender();
+      const { data, error } = await resend.emails.send({
+        from: resendSender,
+        to,
+        subject: 'Articulate — Resend Delivery Test',
+        text: `Resend test email for Articulate diagnostics. Sender: ${resendSender}`,
+        html: `<h3>Resend Test</h3><p>Sender: <strong>${resendSender}</strong></p><p>If you received this, Resend delivery is working.</p>`,
+      });
+      results.resend = error
+        ? { success: false, error: error.message, sender: resendSender }
+        : { success: true, id: data?.id, sender: resendSender };
+    } catch (err) {
+      results.resend = { success: false, error: err.message };
+    }
+  } else {
+    results.resend = { success: false, error: 'RESEND_API_KEY not configured' };
+  }
+
+  // Test Brevo independently
+  if (emailService.isBrevoConfigured()) {
+    const brevoResult = await emailService.sendBrevoEmail({
       to,
       name: 'Articulate Diagnostics',
-      subject: 'Articulate — Email Delivery Diagnostic Test',
-      text: `This is an email delivery diagnostic test sent from Articulate (Provider: ${provider.toUpperCase()}, Sender: ${JSON.stringify(sender)}).`,
-      html: `<h3>Articulate Email Diagnostic</h3><p>Provider: <strong>${provider.toUpperCase()}</strong></p><p>Sender: <strong>${JSON.stringify(sender)}</strong></p><p>If you received this, transactional email delivery is working correctly.</p>`,
+      subject: 'Articulate — Brevo Delivery Test',
+      text: `Brevo test email for Articulate diagnostics. Sender: ${JSON.stringify(emailService.getBrevoSender())}`,
+      html: `<h3>Brevo Test</h3><p>Sender: <strong>${JSON.stringify(emailService.getBrevoSender())}</strong></p><p>If you received this, Brevo delivery is working.</p>`,
     });
-
-    return res.status(result.success ? 200 : 500).json({
-      success: result.success,
-      provider,
-      sender,
-      brevo_api_key_prefix: process.env.BREVO_API_KEY ? process.env.BREVO_API_KEY.substring(0, 8) + '...' : '(not set)',
-      mail_from: process.env.MAIL_FROM || '(not set)',
-      brevo_sender_email: process.env.BREVO_SENDER_EMAIL || '(not set)',
-      result,
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      provider,
-      sender,
-      error: err.message,
-    });
+    results.brevo = { ...brevoResult, sender: emailService.getBrevoSender() };
+  } else {
+    results.brevo = { success: false, error: 'BREVO_API_KEY not configured' };
   }
+
+  return res.json({
+    active_provider: emailService.getActiveProvider(),
+    resend_sender: emailService.getResendSender(),
+    brevo_sender: emailService.isBrevoConfigured() ? emailService.getBrevoSender() : null,
+    brevo_api_key_prefix: process.env.BREVO_API_KEY ? process.env.BREVO_API_KEY.substring(0, 8) + '...' : '(not set)',
+    mail_from: process.env.MAIL_FROM || '(not set)',
+    results,
+  });
 });
 
 /**

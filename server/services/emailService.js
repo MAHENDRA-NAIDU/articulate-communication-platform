@@ -8,9 +8,10 @@ const isResendConfigured = () => Boolean(process.env.RESEND_API_KEY);
 const getIsEmailConfigured = () => isBrevoConfigured() || isSmtpConfigured() || isResendConfigured();
 
 const getActiveProvider = () => {
+  // Resend is preferred when configured: better Gmail deliverability than new Brevo relay domains.
+  if (isResendConfigured()) return 'resend';
   if (isBrevoConfigured()) return 'brevo';
   if (isSmtpConfigured()) return 'smtp';
-  if (isResendConfigured()) return 'resend';
   return 'none';
 };
 
@@ -285,14 +286,42 @@ const isNetworkError = (err) => {
 const dispatchEmail = async ({ to, name, subject, text, html }) => {
   const maskedTo = maskEmail(to);
 
-  // 1. Primary: Brevo HTTPS API (when BREVO_API_KEY is configured)
-  // Operates over HTTPS (port 443) and is never blocked by cloud hosting platforms.
-  // When Brevo is configured, OTP and password-reset messages use Brevo directly without trying SMTP.
+  // 1. Primary: Resend HTTP API
+  // Resend has excellent Gmail deliverability via its shared sending infrastructure.
+  // Preferred over Brevo when both are configured.
+  if (isResendConfigured()) {
+    const from = getResendSender();
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const { data, error } = await resend.emails.send({
+        from,
+        to,
+        subject,
+        text,
+        html,
+      });
+
+      if (error) {
+        console.error(`[Email Service Error] Resend delivery failed for ${maskedTo}:`, error.message);
+        // Fall through to Brevo as backup
+        console.warn(`[Email Service] Resend failed, attempting Brevo fallback for ${maskedTo}.`);
+      } else {
+        console.log(`[Email Service] Dispatched email via Resend to ${maskedTo} (ID: ${data?.id})`);
+        return { success: true, id: data?.id, provider: 'resend' };
+      }
+    } catch (err) {
+      console.error(`[Email Service Exception] Resend error for ${maskedTo}:`, err.message);
+      console.warn(`[Email Service] Resend exception, attempting Brevo fallback for ${maskedTo}.`);
+    }
+  }
+
+  // 2. Brevo HTTPS API (fallback when Resend fails, or primary when only Brevo is configured)
+  // Operates over HTTPS (port 443), never blocked by cloud hosting platforms.
   if (isBrevoConfigured()) {
     return sendBrevoEmail({ to, name, subject, text, html });
   }
 
-  // 2. Secondary: SMTP via Nodemailer (Gmail SMTP)
+  // 3. SMTP via Nodemailer (Gmail SMTP) - last resort
   if (isSmtpConfigured()) {
     const from = getSender();
     try {
@@ -309,50 +338,12 @@ const dispatchEmail = async ({ to, name, subject, text, html }) => {
       return { success: true, id: info.messageId, provider: 'smtp' };
     } catch (err) {
       console.error(`[Email Service Error] SMTP delivery failed for ${maskedTo}:`, err.message);
-
-      // Network-level failure (timeout, refused, socket) → platform likely blocks SMTP ports.
-      // Fall back to Resend HTTP API if it is also configured.
-      if (isNetworkError(err) && isResendConfigured()) {
-        console.warn(
-          `[Email Service] SMTP port appears blocked by hosting platform. ` +
-          `Falling back to Resend HTTP API for ${maskedTo}.`
-        );
-        // Fall through to Resend below
-      } else {
-        // Auth errors, TLS errors, etc. → report directly, do NOT fall back
-        return { success: false, error: err.message, provider: 'smtp' };
-      }
-    }
-  }
-
-  // 2. Resend HTTP API (primary when SMTP is unconfigured, or fallback on SMTP network errors)
-  if (isResendConfigured()) {
-    const from = getResendSender();
-    try {
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      const { data, error } = await resend.emails.send({
-        from,
-        to,
-        subject,
-        text,
-        html,
-      });
-
-      if (error) {
-        console.error(`[Email Service Error] Resend delivery failed for ${maskedTo}:`, error.message);
-        return { success: false, error: error.message, provider: 'resend' };
-      }
-
-      console.log(`[Email Service] Dispatched email via Resend to ${maskedTo} (ID: ${data?.id})`);
-      return { success: true, id: data?.id, provider: 'resend' };
-    } catch (err) {
-      console.error(`[Email Service Exception] Resend error for ${maskedTo}:`, err.message);
-      return { success: false, error: err.message, provider: 'resend' };
+      return { success: false, error: err.message, provider: 'smtp' };
     }
   }
 
   // 4. No delivery mechanism configured
-  const errorMsg = 'Email delivery service is not configured (Neither BREVO_API_KEY, SMTP_USER/SMTP_PASS, nor RESEND_API_KEY provided).';
+  const errorMsg = 'Email delivery service is not configured (Neither RESEND_API_KEY, BREVO_API_KEY, SMTP_USER/SMTP_PASS provided).';
   console.warn(`[Email Service Notice] Delivery skipped for ${maskedTo}: ${errorMsg}`);
 
   if (process.env.NODE_ENV === 'production') {
