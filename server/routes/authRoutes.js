@@ -83,4 +83,50 @@ router.get('/test-email', async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/auth/brevo-logs
+ * @desc    Diagnostic: queries Brevo's own statistics/events API to show delivery status.
+ * @access  Public (temporary diagnostic)
+ */
+router.get('/brevo-logs', async (req, res) => {
+  const apiKey = process.env.BREVO_API_KEY ? process.env.BREVO_API_KEY.trim() : '';
+  if (!apiKey) {
+    return res.status(500).json({ success: false, error: 'BREVO_API_KEY is not set on this server.' });
+  }
+
+  const email = (req.query.email || 'mahendranaidumeesala@gmail.com').trim();
+  const url = `https://api.brevo.com/v3/smtp/statistics/events?limit=20&sort=desc&email=${encodeURIComponent(email)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: { 'api-key': apiKey, 'accept': 'application/json' },
+    });
+    const data = await response.json();
+    return res.status(response.status).json({ success: response.ok, brevo_response: data });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * @route   GET /api/auth/env-check
+ * @desc    Diagnostic: shows which environment variables are present (values masked).
+ * @access  Public (temporary diagnostic)
+ */
+router.get('/env-check', (req, res) => {
+  const mask = (val) => val ? `${val.substring(0, 6)}... (len=${val.length})` : '(NOT SET)';
+  return res.json({
+    NODE_ENV: process.env.NODE_ENV || '(not set)',
+    BREVO_API_KEY: mask(process.env.BREVO_API_KEY),
+    BREVO_SENDER_EMAIL: process.env.BREVO_SENDER_EMAIL || '(NOT SET)',
+    BREVO_SENDER_NAME: process.env.BREVO_SENDER_NAME || '(NOT SET)',
+    BREVO_REPLY_TO: process.env.BREVO_REPLY_TO || '(NOT SET)',
+    MAIL_FROM: process.env.MAIL_FROM || '(NOT SET)',
+    SMTP_USER: process.env.SMTP_USER ? `${process.env.SMTP_USER.substring(0, 6)}...` : '(NOT SET)',
+    SMTP_PASS: process.env.SMTP_PASS ? '(SET)' : '(NOT SET)',
+    CLIENT_URL: process.env.CLIENT_URL || '(NOT SET)',
+    RESEND_API_KEY: process.env.RESEND_API_KEY ? '(SET)' : '(NOT SET)',
+  });
+});
+
 module.exports = router;
