@@ -348,13 +348,23 @@ export const LoginPage = () => {
             >
               <strong>Security Note:</strong> The link will expire in 15 minutes. Please check your spam folder if you do not receive it within a few minutes.
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setForgotModalOpen(false)}
+              >
+                Close
+              </Button>
               <Button
                 type="button"
                 variant="primary"
-                onClick={() => setForgotModalOpen(false)}
+                onClick={() => {
+                  setForgotModalOpen(false);
+                  navigate('/reset-password');
+                }}
               >
-                Return to Sign In
+                Enter Recovery Code
               </Button>
             </div>
           </div>

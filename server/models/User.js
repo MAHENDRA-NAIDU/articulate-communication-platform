@@ -100,6 +100,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       select: false,
     },
+    passwordResetOTP: {
+      type: String,
+      select: false,
+    },
     passwordResetExpires: {
       type: Date,
       select: false,
@@ -142,16 +146,23 @@ userSchema.methods.changedPasswordAfter = function (JWTTimestamp) {
   return false;
 };
 
-// Method to generate single-use cryptographically secure password reset token
+// Method to generate single-use cryptographically secure password reset token and 6-digit recovery code
 userSchema.methods.createPasswordResetToken = function () {
   const resetToken = crypto.randomBytes(32).toString('hex');
+  const otpBuffer = crypto.randomBytes(4);
+  const otpNum = otpBuffer.readUInt32BE(0) % 1000000;
+  const resetCode = String(otpNum).padStart(6, '0');
 
-  // Hash token with SHA-256 before saving to database
+  // Hash token and OTP with SHA-256 before saving to database
   this.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+  this.passwordResetOTP = crypto.createHash('sha256').update(resetCode).digest('hex');
 
   // Configurable expiry: defaults to 15 minutes
   const expiryMinutes = parseInt(process.env.RESET_TOKEN_EXPIRES_MINUTES, 10) || 15;
   this.passwordResetExpires = new Date(Date.now() + expiryMinutes * 60 * 1000);
+
+  // Expose resetCode for immediate retrieval by email service
+  this._currentResetCode = resetCode;
 
   return resetToken;
 };

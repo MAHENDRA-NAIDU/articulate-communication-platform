@@ -752,9 +752,10 @@ export const ProfilePage = () => {
                 onClick={() => {
                   setForgotModalOpen(false);
                   setForgotSuccess(false);
+                  navigate('/reset-password');
                 }}
               >
-                Close
+                Enter Recovery Code
               </Button>
             </div>
           </div>

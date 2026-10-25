@@ -360,16 +360,17 @@ const dispatchEmail = async ({ to, name, subject, text, html }) => {
 };
 
 /**
- * Sends a password recovery email
+ * Sends a password recovery email containing a 6-digit recovery code and direct reset link
  *
  * @param {Object} options
  * @param {string} options.to - Recipient email address
  * @param {string} options.name - Recipient name
  * @param {string} options.resetUrl - Full password reset URL
+ * @param {string} [options.resetCode] - 6-digit plaintext recovery code
  * @param {boolean} [options.forceRealSend] - Bypass test-mode mock in unit tests
  * @returns {Promise<{ success: boolean, id?: string, error?: string, skipped?: boolean }>}
  */
-const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = false }) => {
+const sendPasswordResetEmail = async ({ to, name, resetUrl, resetCode, forceRealSend = false }) => {
   if (process.env.NODE_ENV === 'test' && !forceRealSend) {
     if (to && to.includes('provider-reject')) {
       return {
@@ -410,21 +411,25 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = fals
   }
 
   const recipientName = name ? name.split(' ')[0] : 'Learner';
+  const expiryMinutes = parseInt(process.env.RESET_TOKEN_EXPIRES_MINUTES, 10) || 15;
 
   const textContent = [
     `Hello ${recipientName},`,
     '',
     'We received a request to reset the password for your Articulate account.',
     '',
-    `Please use the following secure link to reset your password:`,
+    resetCode ? `Your 6-digit recovery code is: ${resetCode}` : '',
+    resetCode
+      ? 'Enter this 6-digit code on the reset page, or use the direct link below:'
+      : 'Please use the following secure link to reset your password:',
     `${resetUrl}`,
     '',
-    'This recovery link is valid for 15 minutes and can only be used once.',
+    `This recovery link and code expire in ${expiryMinutes} minutes and can only be used once.`,
     'If you did not request this password reset, please ignore this email. Your account remains secure.',
     '',
     'Best regards,',
     'The Articulate Team',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const htmlContent = `
 <!DOCTYPE html>
@@ -457,29 +462,48 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = fals
           </tr>
           <!-- Body Text -->
           <tr>
-            <td style="font-size: 15px; line-height: 1.6; color: #5C554E; padding-bottom: 24px;">
-              <p style="margin: 0 0 16px 0;">Hello <strong>${recipientName}</strong>,</p>
-              <p style="margin: 0 0 16px 0;">We received a request to reset the password associated with your Articulate account. Click the button below to choose a new, secure password.</p>
+            <td style="font-size: 15px; line-height: 1.6; color: #5C554E; padding-bottom: 20px; text-align: center;">
+              <p style="margin: 0 0 12px 0;">Hello <strong>${recipientName}</strong>,</p>
+              <p style="margin: 0 0 16px 0;">We received a request to reset the password associated with your Articulate account. You can reset your password using your 6-digit recovery code or by clicking the button below.</p>
             </td>
           </tr>
+          ${
+            resetCode
+              ? `
+          <!-- 6-Digit Recovery Code Display -->
+          <tr>
+            <td align="center" style="padding-bottom: 24px;">
+              <p style="margin: 0 0 8px 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #8C827A;">
+                6-Digit Recovery Code
+              </p>
+              <div style="display: inline-block; background-color: #FAF7F2; border: 2px dashed #E05D38; border-radius: 12px; padding: 14px 32px;">
+                <span style="font-size: 34px; font-weight: 800; letter-spacing: 8px; color: #E05D38; font-family: monospace;">
+                  ${resetCode}
+                </span>
+              </div>
+            </td>
+          </tr>
+          `
+              : ''
+          }
           <!-- Action Button -->
           <tr>
-            <td align="center" style="padding-bottom: 28px;">
+            <td align="center" style="padding-bottom: 24px;">
               <a href="${resetUrl}" target="_blank" style="display: inline-block; background-color: #E05D38; color: #FFFFFF; text-decoration: none; font-size: 15px; font-weight: 600; padding: 14px 28px; border-radius: 10px; box-shadow: 0 2px 8px rgba(224, 93, 56, 0.25);">
-                Reset Password
+                Reset Password Directly
               </a>
             </td>
           </tr>
           <!-- Expiration Notice -->
           <tr>
-            <td style="background-color: #FAF7F2; border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.5; color: #736B63; margin-bottom: 24px;">
-              <strong style="color: #191716;">Security Note:</strong> This link expires in <strong>15 minutes</strong> and can only be used once. If you did not make this request, you can safely disregard this email—your password will remain unchanged.
+            <td style="background-color: #FAF7F2; border-radius: 10px; padding: 16px; font-size: 13px; line-height: 1.5; color: #736B63; margin-bottom: 20px;">
+              <strong style="color: #191716;">Security Note:</strong> This recovery request expires in <strong>${expiryMinutes} minutes</strong> and can only be used once. If you did not make this request, you can safely disregard this email—your account remains completely secure.
             </td>
           </tr>
           <!-- Direct Link Fallback -->
           <tr>
-            <td style="font-size: 12px; line-height: 1.5; color: #8C827A; padding-top: 24px; border-top: 1px solid #F0EAE1;">
-              <p style="margin: 0 0 8px 0;">If the button above does not work, copy and paste this URL into your browser:</p>
+            <td style="font-size: 12px; line-height: 1.5; color: #8C827A; padding-top: 20px; border-top: 1px solid #F0EAE1;">
+              <p style="margin: 0 0 8px 0;">If the button above does not work, copy and paste this link into your browser:</p>
               <p style="margin: 0; word-break: break-all; color: #E05D38;">${resetUrl}</p>
             </td>
           </tr>
@@ -491,10 +515,14 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl, forceRealSend = fals
 </html>
   `.trim();
 
+  const emailSubject = resetCode
+    ? `Your Articulate password reset code: ${resetCode}`
+    : 'Reset your Articulate account password';
+
   return dispatchEmail({
     to,
     name: recipientName,
-    subject: 'Reset your Articulate account password',
+    subject: emailSubject,
     text: textContent,
     html: htmlContent,
   });

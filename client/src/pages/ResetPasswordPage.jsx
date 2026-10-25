@@ -17,31 +17,29 @@ export const ResetPasswordPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [successReset, setSuccessReset] = useState(false);
-  const [tokenMissing, setTokenMissing] = useState(false);
+  const [hasTokenFromUrl, setHasTokenFromUrl] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
   // Extract and sanitize recovery token from URL parameters
   useEffect(() => {
     const rawToken = searchParams.get('token') || params.token || '';
-    if (!rawToken.trim()) {
-      setTokenMissing(true);
-      return;
-    }
+    if (rawToken.trim()) {
+      setToken(rawToken.trim());
+      setHasTokenFromUrl(true);
 
-    setToken(rawToken.trim());
-
-    // Sanitize token from the visible URL bar to prevent shoulder-surfing & history leakage
-    try {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    } catch (_) {
-      // Safe fallback if history API is restricted
+      // Sanitize token from the visible URL bar to prevent shoulder-surfing & history leakage
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (_) {
+        // Safe fallback if history API is restricted
+      }
     }
   }, [searchParams, params.token]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!token) {
-      setErrorMessage('Password recovery token is missing. Please request a new recovery link.');
+    if (!token || !token.trim()) {
+      setErrorMessage('Please enter your 6-digit recovery code or recovery token from your email.');
       return;
     }
 
@@ -59,7 +57,7 @@ export const ResetPasswordPage = () => {
       setLoading(true);
       setErrorMessage('');
       const data = await authService.resetPassword({
-        token,
+        token: token.trim(),
         newPassword,
         confirmPassword,
       });
@@ -70,7 +68,7 @@ export const ResetPasswordPage = () => {
       }
     } catch (err) {
       setErrorMessage(
-        err.message || 'Unable to reset password. The recovery link may be invalid or expired.'
+        err.message || 'Unable to reset password. The recovery code or link may be invalid or expired.'
       );
       error(err.message || 'Password reset failed.');
     } finally {
@@ -95,36 +93,7 @@ export const ResetPasswordPage = () => {
             </p>
           </div>
 
-          {/* Missing Token State */}
-          {tokenMissing ? (
-            <div style={{ textAlign: 'center', padding: '16px 0' }}>
-              <div
-                style={{
-                  width: '56px',
-                  height: '56px',
-                  borderRadius: '50%',
-                  backgroundColor: '#FDECEA',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginBottom: '16px',
-                }}
-              >
-                <AlertTriangle size={28} color="#C62828" />
-              </div>
-              <h3 style={{ fontSize: '1.15rem', color: '#191716', margin: '0 0 10px 0' }}>
-                Invalid or Missing Recovery Link
-              </h3>
-              <p style={{ color: '#5C554E', fontSize: '0.92rem', lineHeight: '1.6', margin: '0 0 24px 0' }}>
-                This password recovery link is either malformed, expired, or already used. For security, recovery tokens can only be used once.
-              </p>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
-                <Button variant="primary" onClick={() => navigate('/login')}>
-                  Go to Sign In
-                </Button>
-              </div>
-            </div>
-          ) : successReset ? (
+          {successReset ? (
             /* Success State */
             <div style={{ textAlign: 'center', padding: '16px 0' }}>
               <div
@@ -173,6 +142,42 @@ export const ResetPasswordPage = () => {
                   }}
                 >
                   {errorMessage}
+                </div>
+              )}
+
+              {hasTokenFromUrl ? (
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    backgroundColor: '#F0F9F1',
+                    borderRadius: '8px',
+                    border: '1px solid #D2EFD7',
+                    color: '#2E7D32',
+                    fontSize: '0.85rem',
+                    marginBottom: '18px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <CheckCircle size={16} color="#2E7D32" />
+                  <span>Recovery link verified. Choose your new password below.</span>
+                </div>
+              ) : (
+                <div className="form-group">
+                  <label className="form-label">Recovery Code or Link Token</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Enter 6-digit code or paste recovery token"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value.trim())}
+                    required
+                    autoFocus
+                  />
+                  <span className="form-hint">
+                    Enter the 6-digit code sent to your email address.
+                  </span>
                 </div>
               )}
 

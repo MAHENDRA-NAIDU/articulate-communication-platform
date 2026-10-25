@@ -840,6 +840,38 @@ async function runTests() {
       assert(newLoginRes.data.token, 'Expected token in new login response');
     });
 
+    // TEST 10I: Password Recovery - Reset succeeds using 6-digit OTP code directly
+    await test('Password Recovery: Reset succeeds using 6-digit numeric recovery code directly', async () => {
+      const userToResetWithOtp = await User.findById(testUserId);
+      userToResetWithOtp.createPasswordResetToken();
+      const plain6DigitCode = userToResetWithOtp._currentResetCode;
+      await userToResetWithOtp.save({ validateBeforeSave: false });
+
+      assert(typeof plain6DigitCode === 'string' && plain6DigitCode.length === 6, 'Expected 6-digit OTP code');
+
+      const otpResetRes = await makeRequest('POST', '/api/auth/reset-password', {
+        body: {
+          token: plain6DigitCode,
+          newPassword: 'OtpResetPassword2026!',
+          confirmPassword: 'OtpResetPassword2026!',
+        },
+      });
+      assert(otpResetRes.status === 200, `Expected 200 on OTP password reset, got ${otpResetRes.status}`);
+
+      const userAfterOtpReset = await User.findById(testUserId).select(
+        '+passwordResetToken +passwordResetOTP +passwordResetExpires'
+      );
+      assert(!userAfterOtpReset.passwordResetOTP, 'Expected passwordResetOTP to be cleared');
+      assert(!userAfterOtpReset.passwordResetToken, 'Expected passwordResetToken to be cleared');
+      assert(userAfterOtpReset.isEmailVerified === true, 'Expected isEmailVerified to be true');
+
+      // Test login with the password set via OTP
+      const loginWithOtpPass = await makeRequest('POST', '/api/auth/login', {
+        body: { identifier: testEmail, password: 'OtpResetPassword2026!' },
+      });
+      assert(loginWithOtpPass.status === 200, 'Expected successful login with OTP-reset password');
+    });
+
     // =========================================================================
     // TEST 12: PHASE 3 - EMAIL VERIFICATION (OTP) & GOOGLE SIGN-IN HARDENING
     // =========================================================================

@@ -24,6 +24,17 @@ const generateUniqueUsername = async (base) => {
 };
 
 /**
+ * Mask email for secure logging (e.g. u***r@example.com)
+ */
+const maskEmail = (email) => {
+  if (!email || typeof email !== 'string') return 'unknown';
+  const [local, domain] = email.split('@');
+  if (!domain) return '***';
+  const maskedLocal = local.length > 2 ? `${local[0]}***${local[local.length - 1]}` : `${local[0]}***`;
+  return `${maskedLocal}@${domain}`;
+};
+
+/**
  * @desc    Register a new user (creates pending unverified user, generates 6-digit OTP)
  * @route   POST /api/auth/register
  * @access  Public
@@ -715,21 +726,29 @@ const forgotPassword = async (req, res, next) => {
     const genericMessage =
       'If an account exists with that email address, a password recovery link has been sent.';
 
-    // Look up user by email OR username
+    // Look up user by email OR username (with case-insensitive regex fallback)
+    const escapedInput = cleanInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const user = await User.findOne({
-      $or: [{ email: cleanInput }, { username: cleanInput }],
+      $or: [
+        { email: cleanInput },
+        { username: cleanInput },
+        { email: new RegExp(`^${escapedInput}$`, 'i') },
+        { username: new RegExp(`^${escapedInput}$`, 'i') },
+      ],
     });
 
-    // Always return generic response to prevent account enumeration if user doesn't exist, is deactivated, or unverified
-    if (!user || !user.isActive || !user.isEmailVerified) {
+    // Always return generic response to prevent account enumeration if user doesn't exist or is deactivated
+    if (!user || !user.isActive) {
+      console.log(`[Forgot Password] User not found or inactive for identifier: "${cleanInput}"`);
       return res.status(200).json({
         success: true,
         message: genericMessage,
       });
     }
 
-    // Invalidate older outstanding recovery tokens & generate fresh token
+    // Invalidate older outstanding recovery tokens & generate fresh token + 6-digit code
     const resetToken = user.createPasswordResetToken();
+    const resetCode = user._currentResetCode;
     await user.save({ validateBeforeSave: false });
 
     // Construct secure recovery URL using configured frontend URL or dynamically from request headers
@@ -749,21 +768,29 @@ const forgotPassword = async (req, res, next) => {
     }
 
     if (!clientUrl) {
-      clientUrl = 'http://localhost:5173';
+      clientUrl =
+        process.env.NODE_ENV === 'production'
+          ? 'https://articulate-communication-platform.onrender.com'
+          : 'http://localhost:5173';
     }
 
     const resetUrl = `${clientUrl}/reset-password?token=${resetToken}`;
+
+    console.log(`[Forgot Password] Dispatching recovery email to ${maskEmail(user.email)} (resetCode generated)`);
 
     try {
       const emailResult = await sendPasswordResetEmail({
         to: user.email,
         name: user.name,
         resetUrl,
+        resetCode,
       });
 
       if (!emailResult.success && !emailResult.skipped) {
+        console.error(`[Forgot Password] Delivery failure for ${maskEmail(user.email)}: ${emailResult.error}`);
         // Rollback token if email delivery explicitly failed
         user.passwordResetToken = undefined;
+        user.passwordResetOTP = undefined;
         user.passwordResetExpires = undefined;
         await user.save({ validateBeforeSave: false });
 
@@ -773,7 +800,9 @@ const forgotPassword = async (req, res, next) => {
         });
       }
     } catch (emailErr) {
+      console.error(`[Forgot Password Exception] Delivery error for ${maskEmail(user.email)}: ${emailErr.message}`);
       user.passwordResetToken = undefined;
+      user.passwordResetOTP = undefined;
       user.passwordResetExpires = undefined;
       await user.save({ validateBeforeSave: false });
 
@@ -822,28 +851,33 @@ const resetPassword = async (req, res, next) => {
       });
     }
 
-    // Hash incoming token with SHA-256 to compare with stored hash
+    // Hash incoming token or 6-digit code with SHA-256 to compare with stored hash
     const hashedToken = crypto.createHash('sha256').update(token.trim()).digest('hex');
 
-    // Find user with valid matching unexpired token
+    // Find user with valid matching unexpired token (either by passwordResetToken or passwordResetOTP)
     const user = await User.findOne({
-      passwordResetToken: hashedToken,
+      $or: [{ passwordResetToken: hashedToken }, { passwordResetOTP: hashedToken }],
       passwordResetExpires: { $gt: Date.now() },
-    }).select('+password +passwordResetToken +passwordResetExpires');
+    }).select('+password +passwordResetToken +passwordResetOTP +passwordResetExpires');
 
     if (!user) {
       return res.status(400).json({
         success: false,
-        message: 'Password recovery link is invalid or has expired. Please request a new recovery link.',
+        message: 'Password recovery code or link is invalid or has expired. Please request a new recovery link.',
       });
     }
 
     // Set new password (pre-save hook will hash with bcrypt)
     user.password = newPassword;
 
-    // Single-use: Atomically consume and clear the reset token
+    // Single-use: Atomically consume and clear both reset tokens
     user.passwordResetToken = undefined;
+    user.passwordResetOTP = undefined;
     user.passwordResetExpires = undefined;
+
+    // Resetting password via email verification token proves email ownership
+    user.isEmailVerified = true;
+    user.emailDeliveryStatus = 'delivered';
 
     // Invalidate previous sessions across all devices
     user.tokenVersion = (user.tokenVersion || 0) + 1;
